@@ -1,0 +1,15 @@
+# Секретные ключи и настройки среды
+.env
+
+# База данных SQLite
+data/
+*.db
+
+# Виртуальное окружение Python
+venv/
+.venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.pyc
