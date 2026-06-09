@@ -67,5 +67,5 @@ python app.py
 ## 🔧 Используемый стек
 
 * **Язык:** Python 3.10+
-* **Библиотека:** `aiogram 3.x` (или `pyTelegramBotAPI` / `python-telegram-bot`)
+* **Библиотека:** `aiogram 3.x`
 * **Окружение:** `python-dotenv`
