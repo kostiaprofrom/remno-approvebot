@@ -3,7 +3,6 @@ from config import TARIFFS
 
 
 def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
-    # Главное меню пользователя (с кнопкой админки, если это администратор)
     keyboard = [
         [
             InlineKeyboardButton(
@@ -39,7 +38,6 @@ def get_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
 
 
 def get_tariffs_keyboard() -> InlineKeyboardMarkup:
-    # Клавиатура вывода списка доступных тарифов
     keyboard = []
 
     for tariff in TARIFFS.values():
@@ -60,7 +58,6 @@ def get_tariffs_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_tariff_selected_keyboard() -> InlineKeyboardMarkup:
-    # Меню навигации после выбора тарифа
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_tariffs")],
@@ -70,7 +67,6 @@ def get_tariff_selected_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_back_to_tariffs_keyboard() -> InlineKeyboardMarkup:
-    # Меню возврата на этапе отправки скриншота оплаты
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="open_tariffs")],
@@ -80,7 +76,6 @@ def get_back_to_tariffs_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_admin_request_keyboard(request_id: int) -> InlineKeyboardMarkup:
-    # Кнопки обработки заявки (одобрить/отклонить) в чате администратора
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -98,8 +93,7 @@ def get_admin_request_keyboard(request_id: int) -> InlineKeyboardMarkup:
 
 
 def get_admin_processed_keyboard(status: str) -> InlineKeyboardMarkup:
-    # Заглушка на месте кнопок заявки после её успешной обработки
-    label = "✅ Одобрено" if status in ("approved", "ОДОБРЕНО ✅") else "❌ Отклонено"
+    label = "✅ Одобрено" if status == "approved" else "❌ Отклонено"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -113,7 +107,6 @@ def get_admin_processed_keyboard(status: str) -> InlineKeyboardMarkup:
 
 
 def get_admin_panel_keyboard() -> InlineKeyboardMarkup:
-    # Главное меню панели управления администратора
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -133,7 +126,6 @@ def get_admin_panel_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_admin_access_filters_keyboard() -> InlineKeyboardMarkup:
-    # Выбор фильтрации пользователей (активные/отключенные)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -162,7 +154,6 @@ def get_admin_users_keyboard(
     page: int,
     total_pages: int,
 ) -> InlineKeyboardMarkup:
-    # Постраничный список пользователей с кнопками пагинации ("вперед" / "назад")
     keyboard = []
 
     for user in users:
@@ -214,7 +205,6 @@ def get_admin_user_card_keyboard(
     return_access_value: int,
     return_page: int,
 ) -> InlineKeyboardMarkup:
-    # Управление правами конкретного пользователя внутри его карточки
     new_access = 0 if current_access == 1 else 1
     button_text = "🚫 Отключить доступ" if current_access == 1 else "♻️ Вернуть доступ"
 
