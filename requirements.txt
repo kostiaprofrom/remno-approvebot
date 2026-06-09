@@ -3,3 +3,4 @@ python-dotenv
 aiosqlite
 aiohttp
 requests
+logging

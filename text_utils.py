@@ -3,16 +3,18 @@ from datetime import datetime, timezone
 from html import escape
 from dotenv import load_dotenv
 
-# Загружаем переменные из .env
+# Загружаем переменные из конфигурационного файла .env
 load_dotenv()
 
+
 def get_env_text(key: str, default: str) -> str:
-    """Вспомогательная функция для чтения текстов из .env с поддержкой переноса строк"""
+    # Возвращает текст из .env с поддержкой корректного переноса строк
     text = os.getenv(key, default)
     return text.replace("\\n", "\n")
 
 
 def safe_user_name(username: str | None, full_name: str | None, user_id: int) -> str:
+    # Безопасное форматирование и экранирование имени пользователя для HTML
     if username:
         return f"@{escape(username)}"
     if full_name:
@@ -21,6 +23,7 @@ def safe_user_name(username: str | None, full_name: str | None, user_id: int) ->
 
 
 def calculate_days_left(expires_at: str | None) -> int:
+    # Рассчитывает количество оставшихся дней подписки на основе ISO-строки даты
     if not expires_at:
         return 0
     try:
@@ -45,14 +48,12 @@ def calculate_days_left(expires_at: str | None) -> int:
         now_date = now.date()
 
         delta_days = (expire_date - now_date).days
-        if delta_days <= 0:
-            return 0
-        return delta_days
+        return max(0, delta_days)
     except Exception:
         return 0
 
 
-# --- ТЕКСТЫ АВТОРИЗАЦИИ ---
+# --- ТЕКСТЫ АВТОРИЗАЦИИ ПО КОДУ ---
 
 def build_access_prompt_text() -> str:
     default = "🔐 <b>Доступ к боту закрыт</b>\n\nОтправьте <b>код доступа</b>, чтобы открыть меню."
@@ -69,7 +70,7 @@ def build_access_error_text() -> str:
     return get_env_text("TEXT_ACCESS_ERROR", default)
 
 
-# --- ГЛАВНОЕ МЕНЮ И РЕФЕРАЛЫ ---
+# --- ГЛАВНОЕ МЕНЮ И РЕФЕРАЛЬНАЯ СИСТЕМА ---
 
 def build_main_menu_text(
     days_left: int,
@@ -77,6 +78,7 @@ def build_main_menu_text(
     chat_link: str,
     is_admin: bool = False,
 ) -> str:
+    # Формирует текст личного кабинета пользователя со статусом подписки
     sub_url_line = f'<a href="{escape(subscription_url, quote=True)}">Открыть подписку</a>' if subscription_url else "Пока не создана"
     chat_url_line = f'<a href="{escape(chat_link, quote=True)}">Перейти в чат</a>' if chat_link else "Не указана"
 
@@ -116,7 +118,8 @@ def build_referral_menu_text(
     bonus_days: int,
     referred_count: int,
 ) -> str:
-    ref_link = f"https://t.me/{bot_username}?start=ref_{telegram_id}"
+    # Генерирует экран реферальной программы и ссылку приглашения
+    ref_link = f"https://t.me/{escape(bot_username)}?start=ref_{telegram_id}"
     
     default = (
         "🤝 <b>Реферальная программа</b>\n\n"
@@ -138,6 +141,7 @@ def build_tariffs_text() -> str:
 
 
 def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str) -> str:
+    # Карточка оплаты выбранного тарифа с платежными реквизитами
     default = (
         "💳 <b>Оплата подписки</b>\n\n"
         "📦 <b>Тариф:</b> {tariff_title}\n"
@@ -150,7 +154,7 @@ def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str)
     )
     
     template = get_env_text("TEXT_TARIFF_PAYMENT", default)
-    return template.format(tariff_title=escape(tariff_title), amount=amount, payment_link=payment_link)
+    return template.format(tariff_title=escape(tariff_title), amount=amount, payment_link=escape(payment_link, quote=True))
 
 
 def build_invalid_screenshot_text() -> str:
@@ -163,7 +167,7 @@ def build_request_sent_text() -> str:
     return get_env_text("TEXT_REQUEST_SENT", default)
 
 
-# --- НАПОМИНАНИЯ ---
+# --- ПЛАНИРОВЩИК УВЕДОМЛЕНИЙ ---
 
 def build_expiry_three_days_reminder_text() -> str:
     default = (
@@ -183,7 +187,7 @@ def build_expiry_reminder_text() -> str:
     return get_env_text("TEXT_EXPIRY_1_DAY", default)
 
 
-# --- АДМИН-ПАНЕЛЬ ---
+# --- АДМИН-ПАНЕЛЬ И МОДЕРАЦИЯ ---
 
 def build_admin_request_caption(
     request_id: int,
@@ -192,6 +196,7 @@ def build_admin_request_caption(
     tariff_title: str,
     amount: int,
 ) -> str:
+    # Текст оповещения админа о новом платеже
     default = (
         "🆕 <b>Новая заявка на продление</b>\n\n"
         "<b>ID заявки:</b> {request_id}\n"
@@ -233,6 +238,7 @@ def build_admin_users_list_text(
     total_pages: int,
     total_users: int,
 ) -> str:
+    # Постраничный список пользователей в админке
     active_title = get_env_text("TEXT_ADMIN_USERS_ACTIVE_TITLE", "✅ Активные пользователи")
     inactive_title = get_env_text("TEXT_ADMIN_USERS_INACTIVE_TITLE", "❌ Отключённые пользователи")
     title = active_title if access_value == 1 else inactive_title
@@ -268,6 +274,7 @@ def build_admin_users_list_text(
 
 
 def build_admin_user_card_text(user: dict) -> str:
+    # Подробная карточка управления пользователем
     name = safe_user_name(user.get("username"), user.get("full_name"), user["telegram_id"])
     access_icon = "✅" if user.get("access_granted") == 1 else "❌"
     access_text = "Активен" if user.get("access_granted") == 1 else "Отключён"

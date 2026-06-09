@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 import os
 from datetime import datetime, timezone
@@ -11,6 +12,19 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
+# Загрузка переменных окружения и настройка логирования в консоль
+load_dotenv()
+LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_STR, logging.INFO)
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+# Импорт конфигурационных данных, клавиатур, утилит и методов работы с БД
 from config import (
     ACCESS_CODE,
     CHAT_LINK,
@@ -19,7 +33,7 @@ from config import (
     TARIFFS,
     HERO_IMAGE_PATH,
     WELCOME_IMAGE_PATH,
-    REMIDER_CHECK_INTERVAL_SECONDS,  # <-- СОГЛАСОВАНО С ОПЕЧАТКОЙ ИЗ CONFIG
+    REMIDER_CHECK_INTERVAL_SECONDS,
     ADMIN_USERS_PER_PAGE,
     REFERRAL_BONUS_DAYS,
 )
@@ -44,890 +58,827 @@ from db import (
     create_payment_request,
     get_request_by_id,
     update_request_status,
-    set_user_subscription_data,
-    clear_user_subscription_data,
-    get_last_menu_message_id,
-    set_last_menu_message_id,
-    get_users_for_reminder_check,
-    was_expiry_reminder_sent_by_type,
-    mark_expiry_reminder_sent_by_type,
+    get_pending_requests,
+    get_paginated_users_by_access,
     count_users_by_access,
-    get_users_by_access_paginated,
-    set_user_access,
-    set_referrer,
-    get_referrer_id,
-    count_referred_users,  # <-- ДОБАВИЛИ ИМПОРТ МЕТОДА СТАТИСТИКИ
-    reward_referrer_if_exists,  # <-- ИСПРАВЛЕНО: Добавили импорт нашей новой функции бонусов
+    toggle_user_access,
+    get_all_active_users_for_reminder,
+    mark_expiry_reminder_sent_by_type,
+    process_referral_on_access_grant,
 )
 from text_utils import (
-    safe_user_name,
-    calculate_days_left,
+    build_welcome_text,
     build_main_menu_text,
-    build_referral_menu_text,  # <-- ДОБАВИЛИ ИМПОРТ ТЕКСТА РЕФЕРАЛКИ
-    build_tariff_payment_text,
-    build_admin_request_caption,
-    build_user_request_accepted_text,
-    build_user_request_rejected_text,
-    build_access_prompt_text,
-    build_access_success_text,
-    build_access_error_text,
-    build_invalid_screenshot_text,
     build_tariffs_text,
-    build_request_sent_text,
-    build_expiry_reminder_text,
-    build_expiry_three_days_reminder_text,
     build_admin_panel_text,
+    build_admin_requests_list_text,
+    build_admin_request_details_text,
     build_admin_users_list_text,
     build_admin_user_card_text,
+    build_expiry_reminder_text,
+    build_referral_menu_text,
 )
 from remnawave_api_client import RemnawaveClient
-import aiosqlite
 
-load_dotenv()
-
+# Проверка обязательных переменных окружения для работы бота и API
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip())
-
 REMNAWAVE_BASE_URL = os.getenv("REMNAWAVE_BASE_URL", "").strip()
 REMNAWAVE_TOKEN = os.getenv("REMNAWAVE_TOKEN", "").strip()
 REMNAWAVE_DEFAULT_SQUAD_UUID = os.getenv("REMNAWAVE_DEFAULT_SQUAD_UUID", "").strip()
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML,
-        link_preview_is_disabled=True,
-    ),
-)
+# Инициализация объектов бота, диспетчера aiogram и клиента Remnawave
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
-remnawave_client = RemnawaveClient(
+remnawave = RemnawaveClient(
     base_url=REMNAWAVE_BASE_URL,
     token=REMNAWAVE_TOKEN,
     default_squad_uuid=REMNAWAVE_DEFAULT_SQUAD_UUID,
 )
 
 
-async def delete_user_message_safe(message: Message) -> None:
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
-
-async def delete_message_safe(chat_id: int, message_id: int | None) -> None:
-    if not message_id:
-        return
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception:
-        pass
-
-
-async def send_image_or_text(
-    chat_id: int,
-    text: str,
-    image_path: str | None = None,
-    reply_markup=None,
-) -> Message:
-    if image_path and os.path.exists(image_path):
-        with open(image_path, "rb") as f:
-            photo = BufferedInputFile(f.read(), filename=os.path.basename(image_path))
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=text,
-            reply_markup=reply_markup,
+async def send_or_edit_main_menu(
+    telegram_id: int,
+    username: str | None,
+    full_name: str | None,
+    message_to_edit_id: int | None = None,
+    query_to_answer: CallbackQuery | None = None,
+) -> None:
+    # Вспомогательная функция для отображения или обновления главного меню
+    user_data = await get_user(DB_PATH, telegram_id)
+    if not user_data:
+        user_data = await create_or_update_user(
+            DB_PATH, telegram_id, username, full_name
         )
 
-    return await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=reply_markup,
-        disable_web_page_preview=True,
-    )
+    is_admin = telegram_id == ADMIN_ID
+    text = build_main_menu_text(user_data, is_admin)
+    reply_markup = get_main_menu_keyboard(is_admin)
 
-
-async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
-    user = await get_user(DB_PATH, telegram_id)
-    if not user:
-        return None
-
-    panel_user = None
     try:
-        panel_user = await remnawave_client.find_user(
-            telegram_id=telegram_id,
-            telegram_username=user.get("username"),
-            current_user_uuid=user.get("remnawave_user_uuid"),
-        )
+        if message_to_edit_id:
+            await bot.edit_message_caption(
+                chat_id=telegram_id,
+                message_id=message_to_edit_id,
+                caption=text,
+                reply_markup=reply_markup,
+            )
+        else:
+            if os.path.exists(HERO_IMAGE_PATH):
+                with open(HERO_IMAGE_PATH, "rb") as f:
+                    msg = await bot.send_photo(
+                        chat_id=telegram_id,
+                        photo=BufferedInputFile(f.read(), filename="menu.jpg"),
+                        caption=text,
+                        reply_markup=reply_markup,
+                    )
+                await create_or_update_user(
+                    DB_PATH,
+                    telegram_id,
+                    username,
+                    full_name,
+                    last_menu_message_id=msg.message_id,
+                )
+            else:
+                msg = await bot.send_message(
+                    chat_id=telegram_id, text=text, reply_markup=reply_markup
+                )
+                await create_or_update_user(
+                    DB_PATH,
+                    telegram_id,
+                    username,
+                    full_name,
+                    last_menu_message_id=msg.message_id,
+                )
     except Exception as e:
-        print(f"[SYNC] Failed to sync user {telegram_id}: {e}")
-        return user
-
-    if panel_user is None:
-        if (
-            user.get("remnawave_user_uuid")
-            or user.get("subscription_url")
-            or user.get("subscription_expires_at")
-        ):
-            await clear_user_subscription_data(DB_PATH, telegram_id)
-        return await get_user(DB_PATH, telegram_id)
-
-    expires_at = remnawave_client.extract_expire_at_iso(panel_user)
-    subscription_url = remnawave_client.extract_subscription_url(panel_user)
-    user_uuid = remnawave_client.extract_user_uuid(panel_user)
-
-    await set_user_subscription_data(
-        DB_PATH,
-        telegram_id=telegram_id,
-        remnawave_user_uuid=user_uuid,
-        subscription_url=subscription_url,
-        subscription_expires_at=expires_at,
-    )
-    return await get_user(DB_PATH, telegram_id)
-
-
-async def render_single_main_menu(chat_id: int) -> Message:
-    user = await sync_user_subscription_with_panel(chat_id)
-
-    days_left = calculate_days_left(user.get("subscription_expires_at")) if user else 0
-    subscription_url = user.get("subscription_url") if user else None
-
-    text = build_main_menu_text(
-        days_left=days_left,
-        subscription_url=subscription_url,
-        chat_link=CHAT_LINK,
-        is_admin=(chat_id == ADMIN_ID),
-    )
-
-    old_menu_message_id = await get_last_menu_message_id(DB_PATH, chat_id)
-    if old_menu_message_id:
-        await delete_message_safe(chat_id, old_menu_message_id)
-
-    sent_message = await send_image_or_text(
-        chat_id=chat_id,
-        text=text,
-        image_path=HERO_IMAGE_PATH,
-        reply_markup=get_main_menu_keyboard(is_admin=(chat_id == ADMIN_ID)),
-    )
-
-    await set_last_menu_message_id(DB_PATH, chat_id, sent_message.message_id)
-    return sent_message
-
-
-async def show_admin_panel(callback: CallbackQuery) -> None:
-    text = build_admin_panel_text()
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=get_admin_panel_keyboard(),
+        logger.error(f"Ошибка обновления/отправки главного меню для {telegram_id}: {e}")
+        if not message_to_edit_id:
+            await bot.send_message(
+                chat_id=telegram_id, text=text, reply_markup=reply_markup
             )
-        else:
-            await callback.message.edit_text(
-                text,
-                reply_markup=get_admin_panel_keyboard(),
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=get_admin_panel_keyboard(),
-            disable_web_page_preview=True,
-        )
 
-
-async def show_admin_access_filters(callback: CallbackQuery) -> None:
-    text = (
-        "👥 <b>Управление доступом</b>\n\n"
-        "Выберите, какой список пользователей открыть."
-    )
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=get_admin_access_filters_keyboard(),
-            )
-        else:
-            await callback.message.edit_text(
-                text,
-                reply_markup=get_admin_access_filters_keyboard(),
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=get_admin_access_filters_keyboard(),
-            disable_web_page_preview=True,
-        )
-
-
-async def show_admin_users_page(
-    callback: CallbackQuery,
-    access_value: int,
-    page: int,
-) -> None:
-    total_users = await count_users_by_access(DB_PATH, access_value)
-    total_pages = max(1, math.ceil(total_users / ADMIN_USERS_PER_PAGE))
-    page = max(1, min(page, total_pages))
-
-    users = await get_users_by_access_paginated(
-        DB_PATH,
-        access_value=access_value,
-        page=page,
-        per_page=ADMIN_USERS_PER_PAGE,
-    )
-
-    text = build_admin_users_list_text(
-        users=users,
-        access_value=access_value,
-        page=page,
-        total_pages=total_pages,
-        total_users=total_users,
-    )
-
-    keyboard = get_admin_users_keyboard(
-        users=users,
-        access_value=access_value,
-        page=page,
-        total_pages=total_pages,
-    )
-
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=keyboard,
-            )
-        else:
-            await callback.message.edit_text(
-                text,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
-
-
-async def show_admin_user_card(
-    callback: CallbackQuery,
-    target_user_id: int,
-    access_value: int,
-    page: int,
-) -> None:
-    user = await get_user(DB_PATH, target_user_id)
-    if not user:
-        await callback.answer("Пользователь не найден.", show_alert=True)
-        return
-
-    text = build_admin_user_card_text(user)
-    keyboard = get_admin_user_card_keyboard(
-        telegram_id=target_user_id,
-        current_access=user.get("access_granted", 0),
-        return_access_value=access_value,
-        return_page=page,
-    )
-
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=keyboard,
-            )
-        else:
-            await callback.message.edit_text(
-                text,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
+    if query_to_answer:
+        try:
+            await query_to_answer.answer()
+        except Exception:
+            pass
 
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    user = message.from_user
-    referrer_id = None
-    by_referral_link = False
+    # Обработчик команды /start, регистрация пользователя и проверка реферальной ссылки
+    await state.clear()
+    telegram_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.full_name
 
-    # Разбираем аргументы команды /start
     args = message.text.split()
-    if len(args) > 1:
-        start_arg = args[1]
-        if start_arg.startswith("ref_"):
-            start_arg = start_arg.replace("ref_", "")
-            
-        if start_arg.isdigit():
-            referrer_id = int(start_arg)
-            # Проверяем, что пользователь не перешел по своей собственной ссылке
-            if referrer_id != user.id:
-                await set_referrer(DB_PATH, user.id, referrer_id)
-                by_referral_link = True
+    referred_by = None
+    if len(args) > 1 and args[1].isdigit():
+        ref_id_candidate = int(args[1])
+        if ref_id_candidate != telegram_id:
+            referred_by = ref_id_candidate
 
-    # Создаем или обновляем пользователя в локальной БД
-    await create_or_update_user(
-        DB_PATH,
-        telegram_id=user.id,
-        username=user.username,
-        full_name=user.full_name,
-        referred_by=referrer_id
-    )
+    user_data = await get_user(DB_PATH, telegram_id)
+    if not user_data:
+        user_data = await create_or_update_user(
+            DB_PATH,
+            telegram_id,
+            username,
+            full_name,
+            referred_by=referred_by,
+        )
+        if referred_by:
+            logger.info(f"Пользователь {telegram_id} зарегистрировался по ссылке от {referred_by}")
 
-    # Если пользователь пришел по реферальной ссылке, автоматически выдаем ему доступ
-    if by_referral_link:
-        # В качестве кода пишем отметку, что доступ получен через рефералку от конкретного ID
-        await grant_access(DB_PATH, user.id, f"referred_by_{referrer_id}")
-        
-        # Отправляем приветственное сообщение (как при успешном вводе кода)
-        if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
-            await send_image_or_text(
-                chat_id=message.chat.id,
-                text=build_access_success_text(),
-                image_path=WELCOME_IMAGE_PATH,
-            )
-        else:
-            await bot.send_message(message.chat.id, build_access_success_text())
-
-    db_user = await get_user(DB_PATH, user.id)
-    await delete_user_message_safe(message)
-
-    # Проверяем, есть ли доступ (у рефералов он уже будет равен 1 благодаря коду выше)
-    if db_user and db_user.get("access_granted") == 1:
-        await state.clear()
-        await render_single_main_menu(user.id)
+    if user_data.get("access_granted") == 1:
+        await send_or_edit_main_menu(telegram_id, username, full_name)
         return
 
-    # Обычных пользователей, пришедших без реф-ссылки, отправляем вводить код доступа
+    text = build_welcome_text()
+    if os.path.exists(WELCOME_IMAGE_PATH):
+        with open(WELCOME_IMAGE_PATH, "rb") as f:
+            await message.answer_photo(
+                photo=BufferedInputFile(f.read(), filename="welcome.jpg"),
+                caption=text,
+            )
+    else:
+        await message.answer(text)
+
     await state.set_state(AccessStates.waiting_for_access_code)
-    await bot.send_message(user.id, build_access_prompt_text())
 
 
 @dp.message(AccessStates.waiting_for_access_code)
 async def process_access_code(message: Message, state: FSMContext) -> None:
-    entered_code = (message.text or "").strip()
+    # Проверка инвайт-кода и создание первой бесплатной подписки в Remnawave
+    telegram_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.full_name
+    code_input = message.text.strip() if message.text else ""
 
-    await delete_user_message_safe(message)
+    if code_input == ACCESS_CODE:
+        await state.clear()
+        logger.info(f"Пользователь {telegram_id} ввёл верный инвайт-код.")
 
-    if entered_code != ACCESS_CODE:
-        await bot.send_message(message.chat.id, build_access_error_text())
-        return
-
-    await grant_access(DB_PATH, message.from_user.id, entered_code)
-    await state.clear()
-
-    if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
-        await send_image_or_text(
-            chat_id=message.chat.id,
-            text=build_access_success_text(),
-            image_path=WELCOME_IMAGE_PATH,
+        res = await remnawave.ensure_user_and_extend(
+            telegram_id=telegram_id,
+            telegram_username=username,
+            days=30,
+            current_user_uuid=None,
         )
+
+        if res.get("success"):
+            await grant_access(
+                db_path=DB_PATH,
+                telegram_id=telegram_id,
+                code_used=code_input,
+                remnawave_user_uuid=res.get("user_uuid"),
+                subscription_url=res.get("subscription_url"),
+                subscription_expires_at=res.get("expires_at"),
+            )
+            await process_referral_on_access_grant(DB_PATH, telegram_id, REFERRAL_BONUS_DAYS)
+            await message.answer("🎉 Код верный! Доступ успешно предоставлен на 30 дней.")
+            await send_or_edit_main_menu(telegram_id, username, full_name)
+        else:
+            logger.error(f"Remnawave error при вводе инвайт-кода для {telegram_id}: {res.get('error')}")
+            await message.answer(
+                "❌ Произошла ошибка на стороне VPN-панели при создании аккаунта. Обратитесь к администратору."
+            )
     else:
-        await bot.send_message(message.chat.id, build_access_success_text())
-
-    await render_single_main_menu(message.from_user.id)
-
-
-@dp.callback_query(F.data == "open_tariffs")
-async def open_tariffs(callback: CallbackQuery) -> None:
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=build_tariffs_text(),
-                reply_markup=get_tariffs_keyboard(),
-            )
-        else:
-            await callback.message.edit_text(
-                build_tariffs_text(),
-                reply_markup=get_tariffs_keyboard(),
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await render_single_main_menu(callback.from_user.id)
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "referral_menu")
-async def referral_menu_handler(callback: CallbackQuery) -> None:
-    telegram_id = callback.from_user.id
-    
-    referred_count = await count_referred_users(DB_PATH, telegram_id)
-    bot_info = await bot.get_me()
-    
-    text = build_referral_menu_text(
-        telegram_id=telegram_id,
-        bot_username=bot_info.username,
-        bonus_days=REFERRAL_BONUS_DAYS,
-        referred_count=referred_count
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_main")]
-    ])
-    
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(caption=text, reply_markup=keyboard)
-        else:
-            await callback.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
-    except Exception:
-        await bot.send_message(telegram_id, text, reply_markup=keyboard, disable_web_page_preview=True)
-        
-    await callback.answer()
+        await message.answer("❌ Неверный код доступа. Пожалуйста, попробуйте еще раз или введите корректный инвайт-код:")
 
 
 @dp.callback_query(F.data == "refresh_main")
-async def refresh_main(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+async def callback_refresh_main(query: CallbackQuery) -> None:
+    # Синхронизация статуса подписки и даты окончания из API Remnawave
+    telegram_id = query.from_user.id
+    user_data = await get_user(DB_PATH, telegram_id)
 
-    try:
-        await delete_message_safe(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
+    if user_data and user_data.get("remnawave_user_uuid"):
+        res = await remnawave.find_user(
+            telegram_id=telegram_id,
+            telegram_username=query.from_user.username,
+            current_user_uuid=user_data.get("remnawave_user_uuid"),
+        )
+        if res:
+            expires_at_str = res.get("expire_at") or res.get("expireAt") or ""
+            subscription_url = remnawave._extract_subscription_url(res) or user_data.get("subscription_url")
 
-    await render_single_main_menu(callback.from_user.id)
-    await callback.answer("Меню обновлено.")
+            user_data = await create_or_update_user(
+                DB_PATH,
+                telegram_id,
+                query.from_user.username,
+                query.from_user.full_name,
+                subscription_expires_at=expires_at_str,
+                subscription_url=subscription_url,
+            )
+            logger.debug(f"Синхронизированы данные из Remnawave для {telegram_id}")
+
+    await send_or_edit_main_menu(
+        telegram_id=telegram_id,
+        username=query.from_user.username,
+        full_name=query.from_user.full_name,
+        message_to_edit_id=query.message.message_id,
+        query_to_answer=query,
+    )
 
 
 @dp.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: CallbackQuery, state: FSMContext) -> None:
+async def callback_back_to_main(query: CallbackQuery, state: FSMContext) -> None:
+    # Возврат пользователя в главное меню из любого состояния
     await state.clear()
-
-    try:
-        await delete_message_safe(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-
-    await render_single_main_menu(callback.from_user.id)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await show_admin_panel(callback)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "admin_access_menu")
-async def admin_access_menu(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-    await show_admin_access_filters(callback)
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("admin_users:"))
-async def admin_users_list(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-
-    _, access_value, page = callback.data.split(":")
-    await show_admin_users_page(
-        callback=callback,
-        access_value=int(access_value),
-        page=int(page),
+    await send_or_edit_main_menu(
+        telegram_id=query.from_user.id,
+        username=query.from_user.username,
+        full_name=query.from_user.full_name,
+        message_to_edit_id=query.message.message_id,
+        query_to_answer=query,
     )
-    await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("admin_user_card:"))
-async def admin_user_card(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
+@dp.callback_query(F.data == "referral_menu")
+async def callback_referral_menu(query: CallbackQuery) -> None:
+    # Отображение меню реферальной программы и генерация ссылки приглашения
+    telegram_id = query.from_user.id
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
 
-    _, target_user_id, access_value, page = callback.data.split(":")
-    await show_admin_user_card(
-        callback=callback,
-        target_user_id=int(target_user_id),
-        access_value=int(access_value),
-        page=int(page),
+    user_data = await get_user(DB_PATH, telegram_id)
+    text = build_referral_menu_text(user_data, bot_username, REFERRAL_BONUS_DAYS)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+        ]
     )
-    await callback.answer()
 
-
-@dp.callback_query(F.data.startswith("admin_toggle_access:"))
-async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-
-    _, target_user_id, new_access, access_value, page = callback.data.split(":")
-    target_user_id = int(target_user_id)
-    new_access = int(new_access)
-    access_value = int(access_value)
-    page = int(page)
-
-    await set_user_access(DB_PATH, target_user_id, new_access)
-
-    if new_access == 0:
-        await state.clear()
-        old_menu_message_id = await get_last_menu_message_id(DB_PATH, target_user_id)
-        if old_menu_message_id:
-            await delete_message_safe(target_user_id, old_menu_message_id)
-            await set_last_menu_message_id(DB_PATH, target_user_id, None)
-
-    await show_admin_user_card(
-        callback=callback,
-        target_user_id=target_user_id,
-        access_value=access_value,
-        page=page,
+    await bot.edit_message_caption(
+        chat_id=telegram_id,
+        message_id=query.message.message_id,
+        caption=text,
+        reply_markup=keyboard,
     )
-    await callback.answer("Доступ обновлен.")
+    await query.answer()
+
+
+@dp.callback_query(F.data == "open_tariffs")
+async def callback_open_tariffs(query: CallbackQuery) -> None:
+    # Вывод списка доступных тарифов для продления
+    text = build_tariffs_text()
+    reply_markup = get_tariffs_keyboard()
+
+    await bot.edit_message_caption(
+        chat_id=query.from_user.id,
+        message_id=query.message.message_id,
+        caption=text,
+        reply_markup=reply_markup,
+    )
+    await query.answer()
 
 
 @dp.callback_query(F.data.startswith("tariff:"))
-async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
-    tariff_code = callback.data.split(":")[1]
+async def callback_select_tariff(query: CallbackQuery, state: FSMContext) -> None:
+    # Выбор конкретного тарифа, вывод реквизитов и перевод в режим ожидания чека
+    tariff_code = query.data.split(":")[1]
     tariff = TARIFFS.get(tariff_code)
 
     if not tariff:
-        await callback.answer("Тариф не найден.", show_alert=True)
+        await query.answer("Тариф не найден.", show_alert=True)
         return
 
-    await state.update_data(
-        tariff_code=tariff.code,
-        tariff_days=tariff.days,
-        amount=tariff.price,
-        tariff_title=tariff.title,
+    await state.update_data(tariff_code=tariff.code, tariff_days=tariff.days, amount=tariff.price)
+
+    text = (
+        f"<b>Выбран тариф:</b> {tariff.title}\n"
+        f"<b>Стоимость:</b> {tariff.price} ₽\n\n"
+        f"Пожалуйста, переведите <code>{tariff.price}</code> ₽ по указанной ссылке:\n"
+        f"🔗 <a href='{PAYMENT_LINK}'>Ссылка на оплату</a>\n\n"
+        f"После оплаты отправьте <b>скриншот квитанции</b> (прямо сюда в чат) в качестве подтверждения."
+    )
+    reply_markup = get_back_to_tariffs_keyboard()
+
+    await bot.edit_message_caption(
+        chat_id=query.from_user.id,
+        message_id=query.message.message_id,
+        caption=text,
+        reply_markup=reply_markup,
     )
     await state.set_state(PaymentStates.waiting_for_screenshot)
-
-    text = build_tariff_payment_text(
-        tariff_title=tariff.title,
-        amount=tariff.price,
-        payment_link=PAYMENT_LINK,
-    )
-
-    try:
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=get_tariff_selected_keyboard(),
-            )
-        else:
-            await callback.message.edit_text(
-                text,
-                reply_markup=get_tariff_selected_keyboard(),
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=get_tariff_selected_keyboard(),
-            disable_web_page_preview=True,
-        )
-
-    await callback.answer()
+    await query.answer()
 
 
 @dp.message(PaymentStates.waiting_for_screenshot, F.photo)
-async def process_screenshot(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
+async def process_payment_screenshot(message: Message, state: FSMContext) -> None:
+    # Обработка скриншота оплаты, создание заявки в БД и отправка уведомления админу
+    telegram_id = message.from_user.id
+    user_data = await get_user(DB_PATH, telegram_id)
+    last_menu_id = user_data.get("last_menu_message_id") if user_data else None
 
-    tariff_code = data.get("tariff_code")
-    tariff_days = data.get("tariff_days")
-    amount = data.get("amount")
-    tariff_title = data.get("tariff_title")
-
-    if not tariff_code:
-        await bot.send_message(
-            message.chat.id,
-            "Ошибка: данные тарифа не найдены. Нажми /start и попробуйте снова.",
-        )
-        await state.clear()
-        return
+    state_data = await state.get_data()
+    tariff_code = state_data.get("tariff_code")
+    tariff_days = state_data.get("tariff_days")
+    amount = state_data.get("amount")
 
     screenshot_file_id = message.photo[-1].file_id
+    created_at_str = datetime.now(timezone.utc).isoformat()
 
-    request_id = await create_payment_request(
-        DB_PATH,
-        telegram_id=message.from_user.id,
+    req_id = await create_payment_request(
+        db_path=DB_PATH,
+        telegram_id=telegram_id,
         tariff_code=tariff_code,
         tariff_days=tariff_days,
         amount=amount,
         screenshot_file_id=screenshot_file_id,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=created_at_str,
     )
 
-    await delete_user_message_safe(message)
-    await bot.send_message(message.chat.id, build_request_sent_text())
     await state.clear()
+    logger.info(f"Пользователь {telegram_id} отправил скриншот оплаты. Создана заявка #{req_id}.")
 
-    user = await get_user(DB_PATH, message.from_user.id)
-    display_name = safe_user_name(
-        username=user.get("username") if user else None,
-        full_name=user.get("full_name") if user else None,
-        user_id=message.from_user.id,
-    )
-
-    admin_caption = build_admin_request_caption(
-        request_id=request_id,
-        display_name=display_name,
-        telegram_id=message.from_user.id,
-        tariff_title=tariff_title,
-        amount=amount,
-    )
-
-    await bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=screenshot_file_id,
-        caption=admin_caption,
-        reply_markup=get_admin_request_keyboard(request_id),
-    )
-
-    await render_single_main_menu(message.from_user.id)
-
-
-@dp.message(PaymentStates.waiting_for_screenshot)
-async def process_non_photo_when_waiting_screenshot(message: Message, state: FSMContext) -> None:
-    await delete_user_message_safe(message)
-
-    old_menu_message_id = await get_last_menu_message_id(DB_PATH, message.from_user.id)
-    if old_menu_message_id:
-        await delete_message_safe(message.chat.id, old_menu_message_id)
-        await set_last_menu_message_id(DB_PATH, message.from_user.id, None)
-
-    await bot.send_message(
-        message.chat.id,
-        build_invalid_screenshot_text(),
-        reply_markup=get_back_to_tariffs_keyboard(),
-    )
-
-
-@dp.callback_query(F.data.startswith("admin_approve:"))
-async def admin_approve_request(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
-        return
-
-    request_id = int(callback.data.split(":")[1])
-    request_data = await get_request_by_id(DB_PATH, request_id)
-
-    if not request_data:
-        await callback.answer("Заявка не найдена.", show_alert=True)
-        return
-
-    if request_data["status"] != "pending":
-        await callback.answer("Эта заявка уже обработана.", show_alert=True)
-        return
-
-    buyer_id = request_data["telegram_id"]
-    user = await get_user(DB_PATH, buyer_id)
-    if not user:
-        await callback.message.answer(
-            f"Ошибка: пользователь для заявки #{request_id} не найден в локальной базе."
-        )
-        await callback.answer()
-        return
-
-    try:
-        # 1. Продлеваем/активируем подписку покупателю в Remnawave
-        result = await remnawave_client.ensure_user_and_extend(
-            telegram_id=buyer_id,
-            telegram_username=user.get("username"),
-            days=request_data["tariff_days"],
-            current_user_uuid=user.get("remnawave_user_uuid"),
-        )
-
-        # 2. Переводим заявку в статус одобренной
-        await update_request_status(
-            DB_PATH,
-            request_id=request_id,
-            status="approved",
-            processed_at=datetime.now(timezone.utc).isoformat(),
-            processed_by=callback.from_user.id,
-        )
-
-        # 3. Обновляем данные подписки покупателя в локальной БД
-        await set_user_subscription_data(
-            DB_PATH,
-            telegram_id=buyer_id,
-            remnawave_user_uuid=result.get("user_uuid"),
-            subscription_url=result.get("subscription_url"),
-            subscription_expires_at=result.get("expires_at"),
-        )
-
-        # Уведомляем покупателя
-        await bot.send_message(
-            buyer_id,
-            build_user_request_accepted_text(request_data["tariff_days"]),
-        )
-
-        # ==================== НАЧАЛО РЕФЕРАЛЬНОЙ СИСТЕМЫ ====================
-        # ИСПРАВЛЕНО: Теперь начисление дней происходит через новую функцию и синхронизируется с панелью пригласившего
-        if REFERRAL_BONUS_DAYS > 0:
-            referrer_id = await reward_referrer_if_exists(DB_PATH, new_user_id=buyer_id, bonus_days=REFERRAL_BONUS_DAYS)
-            
-            if referrer_id:
-                referrer_user = await get_user(DB_PATH, referrer_id)
-                if referrer_user and referrer_user.get("access_granted") == 1:
-                    try:
-                        # Если у пригласившего уже есть UUID в панели, синхронизируем начисление с Remnawave
-                        if referrer_user.get("remnawave_user_uuid"):
-                            await remnawave_client.ensure_user_and_extend(
-                                telegram_id=referrer_id,
-                                telegram_username=referrer_user.get("username"),
-                                days=REFERRAL_BONUS_DAYS,
-                                current_user_uuid=referrer_user.get("remnawave_user_uuid")
-                            )
-                        
-                        # Отправляем красивое уведомление с обращением на «Вы»
-                        await bot.send_message(
-                            referrer_id,
-                            f"🎁 <b>Ваш реферал оплатил подписку!</b>\n\n"
-                            f"Вам успешно начислено <b>+{REFERRAL_BONUS_DAYS} дней</b> к Вашей активной подписке. "
-                            f"Спасибо, что рекомендуете наш сервис!"
-                        )
-                    except Exception as ref_err:
-                        print(f"[REFERRAL ERROR] Ошибка синхронизации бонуса с панелью для {referrer_id}: {ref_err}")
-        # ==================== КОНЕЦ РЕФЕРАЛЬНОЙ СИСТЕМЫ ====================
-
-        await render_single_main_menu(buyer_id)
-
+    if last_menu_id:
         try:
-            await callback.message.edit_reply_markup(
-                reply_markup=get_admin_processed_keyboard("approved"),
+            await bot.edit_message_reply_markup(
+                chat_id=telegram_id, message_id=last_menu_id, reply_markup=None
             )
         except Exception:
             pass
 
-        await callback.answer("Заявка одобрена.")
-    except Exception as e:
-        await callback.message.answer(
-            f"❌ <b>Ошибка при апруве заявки #{request_id}</b>\n\n"
-            f"<code>{str(e)}</code>"
+    await message.answer(
+        f"⏳ <b>Заявка #{req_id} успешно создана!</b>\n\n"
+        f"Администратор проверит скриншот в ближайшее время. "
+        f"Вы получите уведомление о результате проверки."
+    )
+
+    await send_or_edit_main_menu(telegram_id, message.from_user.username, message.from_user.full_name)
+
+    try:
+        admin_text = (
+            f"🔔 <b>Новая заявка на оплату #{req_id}!</b>\n"
+            f"От: ID {telegram_id} (@{message.from_user.username or 'нет'})\n"
+            f"Сумма: {amount} ₽ (Тариф: {tariff_code})"
         )
-        await callback.answer("Ошибка при обработке.", show_alert=True)
+        await bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=screenshot_file_id,
+            caption=admin_text,
+            reply_markup=get_admin_request_keyboard(req_id),
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить уведомление админу: {e}")
+
+
+# Раздел административной панели бота
+@dp.callback_query(F.data == "admin_panel")
+async def callback_admin_panel(query: CallbackQuery) -> None:
+    # Открытие главного меню панели администратора
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    text = build_admin_panel_text()
+    reply_markup = get_admin_panel_keyboard()
+
+    await bot.edit_message_caption(
+        chat_id=ADMIN_ID,
+        message_id=query.message.message_id,
+        caption=text,
+        reply_markup=reply_markup,
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data == "admin_pending_requests")
+async def callback_admin_pending_requests(query: CallbackQuery) -> None:
+    # Просмотр списка всех необработанных заявок на оплату
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    reqs = await get_pending_requests(DB_PATH)
+    text = build_admin_requests_list_text(reqs)
+
+    keyboard = []
+    for r in reqs:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=f"Заявка #{r['id']} ({r['amount']}₽)",
+                    callback_data=f"admin_view_req:{r['id']}",
+                )
+            ]
+        )
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin_panel")])
+
+    await bot.edit_message_caption(
+        chat_id=ADMIN_ID,
+        message_id=query.message.message_id,
+        caption=text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_view_req:"))
+async def callback_admin_view_req(query: CallbackQuery) -> None:
+    # Детальный просмотр конкретной заявки со скриншотом чека
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    req_id = int(query.data.split(":")[1])
+    req = await get_request_by_id(DB_PATH, req_id)
+
+    if not req:
+        await query.answer("Заявка не найдена.", show_alert=True)
+        return
+
+    text = build_admin_request_details_text(req)
+
+    try:
+        await bot.delete_message(chat_id=ADMIN_ID, message_id=query.message.message_id)
+    except Exception:
+        pass
+
+    await bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=req["screenshot_file_id"],
+        caption=text,
+        reply_markup=get_admin_request_keyboard(req_id),
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_approve:"))
+async def callback_admin_approve(query: CallbackQuery) -> None:
+    # Одобрение заявки, автоматическое продление подписки в Remnawave и уведомление юзера
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    req_id = int(query.data.split(":")[1])
+    req = await get_request_by_id(DB_PATH, req_id)
+
+    if not req or req["status"] != "pending":
+        await query.answer("Заявка уже обработана или не найдена.", show_alert=True)
+        return
+
+    processed_at_str = datetime.now(timezone.utc).isoformat()
+    await update_request_status(DB_PATH, req_id, "approved", processed_at_str, ADMIN_ID)
+    logger.info(f"Администратор одобрил заявку #{req_id}.")
+
+    target_id = req["telegram_id"]
+    days_to_add = req["tariff_days"]
+
+    target_user = await get_user(DB_PATH, target_id)
+    current_uuid = target_user.get("remnawave_user_uuid") if target_user else None
+
+    res = await remnawave.ensure_user_and_extend(
+        telegram_id=target_id,
+        telegram_username=target_user.get("username") if target_user else None,
+        days=days_to_add,
+        current_user_uuid=current_uuid,
+    )
+
+    if res.get("success"):
+        await grant_access(
+            db_path=DB_PATH,
+            telegram_id=target_id,
+            code_used=f"PURCHASE_{req['tariff_code']}",
+            remnawave_user_uuid=res.get("user_uuid"),
+            subscription_url=res.get("subscription_url"),
+            subscription_expires_at=res.get("expires_at"),
+        )
+
+        try:
+            if query.message.photo:
+                await bot.edit_message_reply_markup(
+                    chat_id=ADMIN_ID,
+                    message_id=query.message.message_id,
+                    reply_markup=get_admin_processed_keyboard("ОДОБРЕНО ✅"),
+                )
+            else:
+                await bot.edit_message_text(
+                    chat_id=ADMIN_ID,
+                    message_id=query.message.message_id,
+                    text=f"Заявка #{req_id} успешно одобрена. Доступ продлен.",
+                    reply_markup=get_admin_processed_keyboard("ОДОБРЕНО ✅"),
+                )
+        except Exception:
+            pass
+
+        try:
+            await bot.send_message(
+                chat_id=target_id,
+                text=f"✅ <b>Ваша заявка #{req_id} одобрена!</b>\nПродление на {days_to_add} дн. успешно активировано.",
+            )
+            if target_user and target_user.get("last_menu_message_id"):
+                await send_or_edit_main_menu(
+                    telegram_id=target_id,
+                    username=target_user.get("username"),
+                    full_name=target_user.get("full_name"),
+                    message_to_edit_id=target_user.get("last_menu_message_id"),
+                )
+        except Exception as e:
+            logger.error(f"Не удалось обновить меню или уведомить пользователя {target_id}: {e}")
+
+        await query.answer("Заявка одобрена!", show_alert=False)
+    else:
+        logger.error(f"Remnawave error при одобрении заявки #{req_id}: {res.get('error')}")
+        await query.answer(f"Ошибка Remnawave: {res.get('error')}", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("admin_reject:"))
-async def admin_reject_request(callback: CallbackQuery) -> None:
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
+async def callback_admin_reject(query: CallbackQuery) -> None:
+    # Отклонение заявки администратором с уведомлением пользователя
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
         return
 
-    request_id = int(callback.data.split(":")[1])
-    request_data = await get_request_by_id(DB_PATH, request_id)
+    req_id = int(query.data.split(":")[1])
+    req = await get_request_by_id(DB_PATH, req_id)
 
-    if not request_data:
-        await callback.answer("Заявка не найдена.", show_alert=True)
+    if not req or req["status"] != "pending":
+        await query.answer("Заявка уже обработана или не найдена.", show_alert=True)
         return
 
-    if request_data["status"] != "pending":
-        await callback.answer("Эта заявка уже обработана.", show_alert=True)
-        return
-
-    await update_request_status(
-        DB_PATH,
-        request_id=request_id,
-        status="rejected",
-        processed_at=datetime.now(timezone.utc).isoformat(),
-        processed_by=callback.from_user.id,
-    )
-
-    await bot.send_message(
-        request_data["telegram_id"],
-        build_user_request_rejected_text(),
-    )
-    await render_single_main_menu(request_data["telegram_id"])
+    processed_at_str = datetime.now(timezone.utc).isoformat()
+    await update_request_status(DB_PATH, req_id, "rejected", processed_at_str, ADMIN_ID)
+    logger.info(f"Администратор отклонил заявку #{req_id}.")
 
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=get_admin_processed_keyboard("rejected"),
+        if query.message.photo:
+            await bot.edit_message_reply_markup(
+                chat_id=ADMIN_ID,
+                message_id=query.message.message_id,
+                reply_markup=get_admin_processed_keyboard("ОТКЛОНЕНО ❌"),
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=ADMIN_ID,
+                message_id=query.message.message_id,
+                text=f"Заявка #{req_id} отклонена.",
+                reply_markup=get_admin_processed_keyboard("ОТКЛОНЕНО ❌"),
+            )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=req["telegram_id"],
+            text=f"❌ <b>Ваша заявка #{req_id} на оплату отклонена.</b>\n"
+            f"Если это ошибка, проверьте квитанцию или свяжитесь с администратором.",
         )
     except Exception:
         pass
 
-    await callback.answer("Заявка отклонена.")
+    await query.answer("Заявка отклонена.", show_alert=False)
 
 
+@dp.callback_query(F.data == "admin_access_menu")
+async def callback_admin_access_menu(query: CallbackQuery) -> None:
+    # Отображение фильтров для работы со списком пользователей
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    text = "Выберите фильтр для отображения списка пользователей:"
+    reply_markup = get_admin_access_filters_keyboard()
+
+    if query.message.photo:
+        try:
+            await bot.delete_message(chat_id=ADMIN_ID, message_id=query.message.message_id)
+        except Exception:
+            pass
+        await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=reply_markup)
+    else:
+        await bot.edit_message_text(
+            chat_id=ADMIN_ID,
+            message_id=query.message.message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_users:"))
+async def callback_admin_users_list(query: CallbackQuery) -> None:
+    # Вывод постраничного списка пользователей с учетом выбранного фильтра
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    parts = query.data.split(":")
+    access_value = int(parts[1])
+    page = int(parts[2])
+
+    total_users = await count_users_by_access(DB_PATH, access_value)
+    total_pages = math.ceil(total_users / ADMIN_USERS_PER_PAGE)
+    if total_pages == 0:
+        total_pages = 1
+    if page < 1:
+        page = 1
+    if page > total_pages:
+        page = total_pages
+
+    users_list = await get_paginated_users_by_access(
+        DB_PATH, access_value, page, ADMIN_USERS_PER_PAGE
+    )
+    text = build_admin_users_list_text(users_list, access_value, page, total_pages, total_users)
+    reply_markup = get_admin_users_keyboard(users_list, access_value, page, total_pages)
+
+    if query.message.photo:
+        try:
+            await bot.delete_message(chat_id=ADMIN_ID, message_id=query.message.message_id)
+        except Exception:
+            pass
+        await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=reply_markup)
+    else:
+        await bot.edit_message_text(
+            chat_id=ADMIN_ID,
+            message_id=query.message.message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_user_card:"))
+async def callback_admin_user_card(query: CallbackQuery) -> None:
+    # Просмотр детальной карточки пользователя администратором
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    parts = query.data.split(":")
+    target_id = int(parts[1])
+    return_access_value = int(parts[2])
+    return_page = int(parts[3])
+
+    user_data = await get_user(DB_PATH, target_id)
+    if not user_data:
+        await query.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    text = build_admin_user_card_text(user_data)
+    reply_markup = get_admin_user_card_keyboard(
+        telegram_id=target_id,
+        current_access=user_data.get("access_granted", 0),
+        return_access_value=return_access_value,
+        return_page=return_page,
+    )
+
+    await bot.edit_message_text(
+        chat_id=ADMIN_ID,
+        message_id=query.message.message_id,
+        text=text,
+        reply_markup=reply_markup,
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("admin_toggle_access:"))
+async def callback_admin_toggle_access(query: CallbackQuery) -> None:
+    # Принудительное включение/выключение доступа пользователю из карточки
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    parts = query.data.split(":")
+    target_id = int(parts[1])
+    new_access = int(parts[2])
+    return_access_value = int(parts[3])
+    return_page = int(parts[4])
+
+    await toggle_user_access(DB_PATH, target_id, new_access)
+    logger.info(f"Администратор изменил доступ пользователя {target_id} на {new_access}.")
+
+    target_user = await get_user(DB_PATH, target_id)
+    if target_user and target_user.get("remnawave_user_uuid"):
+        try:
+            if new_access == 0:
+                past_date = datetime(2000, 1, 1, tzinfo=timezone.utc)
+                await remnawave.update_user_expiry(
+                    user_uuid=target_user.get("remnawave_user_uuid"),
+                    new_expire_at=past_date,
+                    user=None,
+                )
+            else:
+                future_date = datetime.now(timezone.utc) + asyncio.timedelta(days=30)
+                await remnawave.update_user_expiry(
+                    user_uuid=target_user.get("remnawave_user_uuid"),
+                    new_expire_at=future_date,
+                    user=None,
+                )
+        except Exception as e:
+            logger.error(f"Не удалось обновить статус в панели Remnawave для {target_id}: {e}")
+
+    updated_user = await get_user(DB_PATH, target_id)
+    text = build_admin_user_card_text(updated_user)
+    reply_markup = get_admin_user_card_keyboard(
+        telegram_id=target_id,
+        current_access=updated_user.get("access_granted", 0),
+        return_access_value=return_access_value,
+        return_page=return_page,
+    )
+
+    await bot.edit_message_text(
+        chat_id=ADMIN_ID,
+        message_id=query.message.message_id,
+        text=text,
+        reply_markup=reply_markup,
+    )
+    await query.answer("Статус доступа изменен.", show_alert=False)
+
+
+# Фоновый планировщик уведомлений об окончании подписки
 async def reminder_scheduler() -> None:
+    # Бесконечный цикл проверки и рассылки уведомлений за 3 дня и за 1 день
     while True:
         try:
-            users = await get_users_for_reminder_check(DB_PATH)
+            logger.debug("Запуск проверки окончания подписок планировщиком...")
+            active_users = await get_all_active_users_for_reminder(DB_PATH)
+            now = datetime.now(timezone.utc)
 
-            for user in users:
+            for user in active_users:
                 telegram_id = user["telegram_id"]
+                expires_str = user["subscription_expires_at"]
 
-                synced_user = await sync_user_subscription_with_panel(telegram_id)
-                if not synced_user:
+                if not expires_str:
                     continue
 
-                expires_at = synced_user.get("subscription_expires_at")
-                if not expires_at:
+                try:
+                    s = str(expires_str).replace("Z", "+00:00")
+                    if "." in s:
+                        base, tz = s.split(".", 1)
+                        if "+" in tz:
+                            ms, zone = tz.split("+", 1)
+                            s = f"{base}.{ms[:6]}+{zone}"
+                        elif "-" in tz:
+                            ms, zone = tz.split("-", 1)
+                            s = f"{base}.{ms[:6]}-{zone}"
+                        else:
+                            s = f"{base}.{tz[:6]}"
+
+                    expire_dt = datetime.fromisoformat(s)
+                except Exception:
                     continue
 
-                days_left = calculate_days_left(expires_at)
-                expiry_date_key = expires_at.split("T")[0]
+                diff = expire_dt - now
+                days_left = diff.total_seconds() / 86400.0
+                expiry_date_key = expire_dt.date().isoformat()
 
-                if days_left == 3:
-                    if not await was_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_3_days", expiry_date_key):
+                if 2.0 < days_left <= 3.0:
+                    if user.get("reminder_3_days_sent") != expiry_date_key:
                         await asyncio.sleep(0.05)
                         try:
-                            await bot.send_message(telegram_id, build_expiry_three_days_reminder_text())
-                            await mark_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_3_days", expiry_date_key)
+                            await bot.send_message(
+                                chat_id=telegram_id,
+                                text="⚠️ <b>Внимание!</b> До окончания вашей подписки осталось менее 3 дней. Рекомендуем продлить её заранее.",
+                            )
+                            await mark_expiry_reminder_sent_by_type(
+                                DB_PATH, telegram_id, "expiry_3_days", expiry_date_key
+                            )
                         except Exception as e:
-                            print(f"[REMINDER] Ошибка отправки (3 дня) для {telegram_id}: {e}")
+                            logger.error(f"Ошибка отправки напоминания (3 дня) пользователю {telegram_id}: {e}")
 
-                elif days_left == 1:
-                    if not await was_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_1_day", expiry_date_key):
+                elif 0.0 < days_left <= 1.0:
+                    if user.get("reminder_1_day_sent") != expiry_date_key:
                         await asyncio.sleep(0.05)
                         try:
-                            await bot.send_message(telegram_id, build_expiry_reminder_text())
-                            await mark_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_1_day", expiry_date_key)
+                            await bot.send_message(
+                                chat_id=telegram_id,
+                                text=build_expiry_reminder_text(),
+                            )
+                            await mark_expiry_reminder_sent_by_type(
+                                DB_PATH, telegram_id, "expiry_1_day", expiry_date_key
+                            )
                         except Exception as e:
-                            print(f"[REMINDER] Ошибка отправки (1 день) для {telegram_id}: {e}")
+                            logger.error(f"Ошибка отправки напоминания (1 день) пользователю {telegram_id}: {e}")
 
         except Exception as e:
-            print(f"[REMINDER] Scheduler error: {e}")
-            
+            logger.error(f"Ошибка в работе планировщика уведомлений: {e}")
+
         await asyncio.sleep(REMIDER_CHECK_INTERVAL_SECONDS)
 
 
+# Асинхронная точка входа для инициализации и запуска бота
 async def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("Не задан BOT_TOKEN в .env")
-
     if not ADMIN_ID:
         raise ValueError("Не задан ADMIN_ID в .env")
-
     if not REMNAWAVE_BASE_URL or not REMNAWAVE_TOKEN:
         raise ValueError("Не заданы REMNAWAVE_BASE_URL или REMNAWAVE_TOKEN в .env")
 
     await init_db(DB_PATH)
-
     await bot.delete_webhook(drop_pending_updates=True)
-
     asyncio.create_task(reminder_scheduler())
 
-    print("🚀 Бот запущен...")
-    print(f"   Admin ID: {ADMIN_ID}")
-    print(f"   Remnawave: {REMNAWAVE_BASE_URL}")
-    print(
-        f"   Default squad: {REMNAWAVE_DEFAULT_SQUAD_UUID[:8]}..."
-        if REMNAWAVE_DEFAULT_SQUAD_UUID
-        else "   Default squad: не задан"
-    )
-    print(f"   Reminder interval: {REMIDER_CHECK_INTERVAL_SECONDS} sec")
+    logger.info("🚀 Бот запущен...")
+    logger.info(f"   Admin ID: {ADMIN_ID}")
+    logger.info(f"   Remnawave: {REMNAWAVE_BASE_URL}")
+    if REMNAWAVE_DEFAULT_SQUAD_UUID:
+        logger.info(f"   Default squad: {REMNAWAVE_DEFAULT_SQUAD_UUID[:8]}...")
 
     await dp.start_polling(bot)
 

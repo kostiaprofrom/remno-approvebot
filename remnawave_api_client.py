@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import aiohttp
+import logging
+
+# Настройка локального логгера для модуля API-клиента
+logger = logging.getLogger(__name__)
 
 
 class RemnawaveClient:
@@ -12,12 +16,14 @@ class RemnawaveClient:
         token: str,
         default_squad_uuid: str | None = None,
     ):
+        # Инициализация параметров подключения к панели Remnawave
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.default_squad_uuid = (default_squad_uuid or "").strip() or None
 
     @staticmethod
     def build_username(telegram_id: int, telegram_username: str | None) -> str:
+        # Валидация и сборка системного юзернейма из данных Telegram
         if telegram_username:
             value = telegram_username.strip().lstrip("@").lower()
 
@@ -36,12 +42,14 @@ class RemnawaveClient:
 
     @staticmethod
     def _dt_to_iso(dt: datetime) -> str:
+        # Приведение объекта datetime к ISO-строке в формате UTC
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).isoformat()
 
     @staticmethod
     def _parse_dt(value: Any) -> datetime | None:
+        # Парсинг ISO-строки даты ответа API в объект datetime
         if not value:
             return None
 
@@ -55,6 +63,7 @@ class RemnawaveClient:
 
     @staticmethod
     def _extract_data(payload: Any) -> Any:
+        # Извлечение вложенного объекта данных из типовых оберток ответа API
         if not isinstance(payload, dict):
             return payload
 
@@ -66,12 +75,14 @@ class RemnawaveClient:
 
     @staticmethod
     def _extract_user_uuid(user_obj: Any) -> str | None:
+        # Поиск UUID пользователя в словаре ответа
         if isinstance(user_obj, dict):
             return user_obj.get("uuid") or user_obj.get("id")
         return None
 
     @staticmethod
     def _extract_subscription_url(user_obj: Any) -> str | None:
+        # Извлечение ссылки на подписку пользователя
         if not isinstance(user_obj, dict):
             return None
 
@@ -89,6 +100,7 @@ class RemnawaveClient:
 
     @staticmethod
     def _extract_expire_at(user_obj: Any) -> datetime | None:
+        # Извлечение даты окончания действия подписки
         if not isinstance(user_obj, dict):
             return None
 
@@ -107,6 +119,7 @@ class RemnawaveClient:
         return self._dt_to_iso(dt) if dt else None
 
     def _headers(self) -> dict[str, str]:
+        # Сборка обязательных HTTP-заголовков авторизации
         return {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -120,43 +133,52 @@ class RemnawaveClient:
         json_data: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
+        # Выполнение асинхронного HTTP-запроса к панели Remnawave
         url = f"{self.base_url}{path}"
 
-        print(f"[REMNAWAVE] {method} {url}")
+        logger.debug(f"Запрос: {method} {url}")
         if params:
-            print(f"[REMNAWAVE] params={params}")
+            logger.debug(f"Параметры: {params}")
         if json_data:
-            print(f"[REMNAWAVE] json={json_data}")
+            logger.debug(f"Тело JSON: {json_data}")
 
         timeout = aiohttp.ClientTimeout(total=30)
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=self._headers(),
-                json=json_data,
-                params=params,
-                ssl=False,
-            ) as response:
-                text = await response.text()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.request(
+                    method=method,
+                    url=url,
+                    headers=self._headers(),
+                    json=json_data,
+                    params=params,
+                    ssl=False,
+                ) as response:
+                    text = await response.text()
 
-                print(f"[REMNAWAVE] status={response.status}")
-                print(f"[REMNAWAVE] body={text[:3000]}")
+                    logger.debug(f"Ответ статус: {response.status}")
+                    logger.debug(f"Тело ответа (срез): {text[:1000]}")
 
-                try:
-                    parsed = await response.json(content_type=None)
-                except Exception:
-                    parsed = text
+                    try:
+                        parsed = await response.json(content_type=None)
+                    except Exception:
+                        parsed = text
 
-                if response.status >= 400:
-                    raise Exception(
-                        f"HTTP {response.status} | URL: {url} | Response: {parsed}"
-                    )
+                    if response.status >= 400:
+                        raise Exception(
+                            f"HTTP {response.status} | URL: {url} | Response: {parsed}"
+                        )
 
-                return parsed
+                    return parsed
+        except aiohttp.ClientError as e:
+            logger.error(f"Сетевая ошибка при запросе к Remnawave ({method} {path}): {e}")
+            raise
+        except Exception:
+            logger.exception(f"Непредвиденная ошибка при запросе к Remnawave ({method} {path})")
+            raise
 
     async def get_internal_squad_by_uuid(self, squad_uuid: str) -> dict[str, Any] | None:
+        # Получение информации о конкретном скваде
         try:
             response = await self._request("GET", f"/api/internal-squads/{squad_uuid}")
             data = self._extract_data(response)
@@ -167,6 +189,7 @@ class RemnawaveClient:
             raise
 
     async def verify_default_internal_squad(self) -> None:
+        # Проверка существования дефолтного сквада при запуске приложения
         if not self.default_squad_uuid:
             return
 
@@ -177,12 +200,12 @@ class RemnawaveClient:
             )
 
         squad_name = squad.get("name") if isinstance(squad, dict) else None
-        print(
-            f"[REMNAWAVE] verified internal squad: "
-            f"{self.default_squad_uuid} | name={squad_name}"
+        logger.info(
+            f"Успешная верификация сквада: {self.default_squad_uuid} | name={squad_name}"
         )
 
     async def get_user_by_uuid(self, user_uuid: str) -> dict[str, Any] | None:
+        # Получение данных пользователя по его UUID в панели
         try:
             response = await self._request("GET", f"/api/users/{user_uuid}")
             data = self._extract_data(response)
@@ -193,6 +216,7 @@ class RemnawaveClient:
             raise
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> dict[str, Any] | None:
+        # Поиск пользователя по Telegram ID через API панели
         try:
             response = await self._request(
                 "GET", f"/api/users/by-telegram-id/{telegram_id}"
@@ -215,6 +239,7 @@ class RemnawaveClient:
             raise
 
     async def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        # Поиск пользователя по его системному юзернейму панели
         try:
             response = await self._request("GET", f"/api/users/by-username/{username}")
             data = self._extract_data(response)
@@ -230,20 +255,21 @@ class RemnawaveClient:
         telegram_username: str | None,
         current_user_uuid: str | None = None,
     ) -> dict[str, Any] | None:
+        # Комплексный последовательный поиск пользователя по всем доступным идентификаторам
         if current_user_uuid:
             try:
                 user = await self.get_user_by_uuid(current_user_uuid)
                 if user:
                     return user
             except Exception as e:
-                print(f"[REMNAWAVE] get_user_by_uuid failed: {e}")
+                logger.warning(f"Поиск по UUID {current_user_uuid} не удался: {e}")
 
         try:
             user = await self.get_user_by_telegram_id(telegram_id)
             if user:
                 return user
         except Exception as e:
-            print(f"[REMNAWAVE] get_user_by_telegram_id failed: {e}")
+            logger.warning(f"Поиск по Telegram ID {telegram_id} не удался: {e}")
 
         remnawave_username = self.build_username(telegram_id, telegram_username)
 
@@ -252,7 +278,7 @@ class RemnawaveClient:
             if user:
                 return user
         except Exception as e:
-            print(f"[REMNAWAVE] get_user_by_username failed: {e}")
+            logger.warning(f"Поиск по сгенерированному юзернейму {remnawave_username} не удался: {e}")
 
         return None
 
@@ -262,6 +288,8 @@ class RemnawaveClient:
         telegram_username: str | None,
         days: int,
     ) -> dict[str, Any]:
+        # Регистрация нового пользователя в панели с добавлением в дефолтный сквад
+        logger.info(f"Запрос на создание нового пользователя в панели Remnawave для TG: {telegram_id}")
         await self.verify_default_internal_squad()
 
         expire_at = datetime.now(timezone.utc) + timedelta(days=days)
@@ -297,10 +325,13 @@ class RemnawaveClient:
         if not isinstance(created_user, dict):
             raise Exception(f"Неожиданный ответ create_user: {created_user}")
 
+        user_uuid = self._extract_user_uuid(created_user)
+        logger.info(f"Пользователь успешно создан в панели. UUID: {user_uuid}")
+
         return {
             "success": True,
             "action": "created_and_extended",
-            "user_uuid": self._extract_user_uuid(created_user),
+            "user_uuid": user_uuid,
             "subscription_url": self._extract_subscription_url(created_user),
             "expires_at": self._dt_to_iso(expire_at),
             "raw": created_user,
@@ -311,6 +342,7 @@ class RemnawaveClient:
         user: dict[str, Any],
         days: int,
     ) -> dict[str, Any]:
+        # Сдвиг даты окончания подписки на N дней вперед относительно текущей или будущей даты
         user_uuid = self._extract_user_uuid(user)
         if not user_uuid:
             raise Exception("У существующего пользователя нет UUID")
@@ -324,6 +356,7 @@ class RemnawaveClient:
             base_dt = current_expire_at
 
         new_expire_at = base_dt + timedelta(days=days)
+        logger.info(f"Продление подписки в Remnawave для UUID {user_uuid} на {days} дней. Новый expireAt: {new_expire_at}")
 
         payload = {
             "uuid": user_uuid,
@@ -355,6 +388,34 @@ class RemnawaveClient:
             "raw": updated_user,
         }
 
+    async def update_user_expiry(
+        self,
+        user_uuid: str,
+        new_expire_at: datetime,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Алиас-метод для установки фиксированной даты (вызывается в карточке админа)
+        logger.info(f"Установка фиксированной даты подписки для UUID {user_uuid} на: {new_expire_at}")
+        
+        payload = {
+            "uuid": user_uuid,
+            "expireAt": self._dt_to_iso(new_expire_at),
+        }
+
+        response = await self._request(
+            method="PATCH",
+            path="/api/users",
+            json_data=payload,
+        )
+        
+        updated_user = self._extract_data(response)
+        return {
+            "success": True,
+            "user_uuid": user_uuid,
+            "expires_at": self._dt_to_iso(new_expire_at),
+            "raw": updated_user,
+        }
+
     async def ensure_user_and_extend(
         self,
         telegram_id: int,
@@ -362,6 +423,7 @@ class RemnawaveClient:
         days: int,
         current_user_uuid: str | None = None,
     ) -> dict[str, Any]:
+        # Проверяет существование пользователя; создает нового или продлевает существующего
         user = await self.find_user(
             telegram_id=telegram_id,
             telegram_username=telegram_username,
