@@ -1,17 +1,21 @@
+
+# Импорт стандартных библиотек
 import asyncio
 import math
 import os
 import sys
 import logging
 from datetime import datetime, timezone
+
+# Загрузка переменных окружения из .env файла
 from dotenv import load_dotenv
 
-# 1. Первым делом загружаем переменные окружения
-load_dotenv()
+# 1. Настройка системы логирования
 
-# 2. Настраиваем логирование на основе переменной LOG_LEVEL из .env без создания файлов
 def setup_logging():
+    # Чтение уровня логирования из переменной окружения (по умолчанию INFO)
     env_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    # Сопоставление строковых значений с константами logging
     levels = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -21,26 +25,28 @@ def setup_logging():
     }
     log_level = levels.get(env_level, logging.INFO)
 
-    # Красивый и информативный формат для консоли
+    # Формат вывода: время [уровень] имя_логгера: сообщение
     log_format = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
+    # Обработчик для вывода в консоль (stdout)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_format)
     console_handler.setLevel(log_level)
 
+    # Корневой логгер: уровень и обработчик
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     
-    # Очищаем старые хендлеры, чтобы избежать дублирования сообщений
+    # Удаляем старые хендлеры, чтобы не дублировать сообщения
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
         
     root_logger.addHandler(console_handler)
 
-    # Защита от излишнего спама в DEBUG-режиме от сторонних сетевых библиотек
+    # Подавляем излишний DEBUG-спам от сторонних библиотек
     if log_level == logging.DEBUG:
         logging.getLogger("aiogram").setLevel(logging.INFO)
         logging.getLogger("aiohttp").setLevel(logging.INFO)
@@ -50,12 +56,14 @@ def setup_logging():
         logging.getLogger("aiohttp").setLevel(logging.WARNING)
         logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 
+    # Подтверждение успешной инициализации логирования
     root_logger.info(f"Логирование успешно инициализировано. Текущий уровень: {env_level}")
 
+# Выполняем настройку логирования сразу при загрузке модуля
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# 3. Остальные импорты проекта
+# 2. Импорты зависимостей проекта (aiogram, конфигурация, БД, API-клиенты)
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -63,6 +71,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
+# Конфигурационные параметры, загруженные из .env и config.py
 from config import (
     ACCESS_CODE,
     CHAT_LINK,
@@ -71,11 +80,15 @@ from config import (
     TARIFFS,
     HERO_IMAGE_PATH,
     WELCOME_IMAGE_PATH,
-    REMIDER_CHECK_INTERVAL_SECONDS,  # <-- СОГЛАСОВАНО С ОПЕЧАТКОЙ ИЗ CONFIG
+    REMIDER_CHECK_INTERVAL_SECONDS,
     ADMIN_USERS_PER_PAGE,
     REFERRAL_BONUS_DAYS,
 )
+
+# Состояния для FSM
 from states import AccessStates, PaymentStates
+
+# Клавиатуры (инлайн)
 from keyboards import (
     get_main_menu_keyboard,
     get_tariffs_keyboard,
@@ -88,6 +101,8 @@ from keyboards import (
     get_admin_users_keyboard,
     get_admin_user_card_keyboard,
 )
+
+# Функции работы с базой данных SQLite
 from db import (
     init_db,
     create_or_update_user,
@@ -111,6 +126,8 @@ from db import (
     count_referred_users,
     reward_referrer_if_exists,
 )
+
+# Генераторы текстов
 from text_utils import (
     safe_user_name,
     calculate_days_left,
@@ -132,9 +149,12 @@ from text_utils import (
     build_admin_users_list_text,
     build_admin_user_card_text,
 )
+
+# Клиент для взаимодействия с панелью Remnawave (VPN-сервис)
 from remnawave_api_client import RemnawaveClient
 import aiosqlite
 
+# 3. Чтение обязательных переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip())
 
@@ -142,6 +162,7 @@ REMNAWAVE_BASE_URL = os.getenv("REMNAWAVE_BASE_URL", "").strip()
 REMNAWAVE_TOKEN = os.getenv("REMNAWAVE_TOKEN", "").strip()
 REMNAWAVE_DEFAULT_SQUAD_UUID = os.getenv("REMNAWAVE_DEFAULT_SQUAD_UUID", "").strip()
 
+# 4. Инициализация бота, диспетчера и клиента Remnawave
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(
@@ -157,15 +178,17 @@ remnawave_client = RemnawaveClient(
     default_squad_uuid=REMNAWAVE_DEFAULT_SQUAD_UUID,
 )
 
+# 5. Вспомогательные функции для работы с сообщениями
 
 async def delete_user_message_safe(message: Message) -> None:
+    """Безопасно удаляет сообщение пользователя (игнорирует ошибки)."""
     try:
         await message.delete()
     except Exception:
         pass
 
-
 async def delete_message_safe(chat_id: int, message_id: int | None) -> None:
+    """Безопасно удаляет сообщение по его ID."""
     if not message_id:
         return
     try:
@@ -173,13 +196,16 @@ async def delete_message_safe(chat_id: int, message_id: int | None) -> None:
     except Exception:
         pass
 
-
 async def send_image_or_text(
     chat_id: int,
     text: str,
     image_path: str | None = None,
     reply_markup=None,
 ) -> Message:
+    """
+    Отправляет сообщение: если указан image_path и файл существует – отправляет фото с подписью,
+    иначе – обычное текстовое сообщение.
+    """
     if image_path and os.path.exists(image_path):
         with open(image_path, "rb") as f:
             photo = BufferedInputFile(f.read(), filename=os.path.basename(image_path))
@@ -197,8 +223,13 @@ async def send_image_or_text(
         disable_web_page_preview=True,
     )
 
-
+# 6. Синхронизация данных пользователя с панелью Remnawave
 async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
+    """
+    Получает актуальные данные о подписке пользователя из панели Remnawave
+    и обновляет локальную базу данных.
+    Возвращает запись пользователя из БД (обновлённую).
+    """
     user = await get_user(DB_PATH, telegram_id)
     if not user:
         return None
@@ -214,6 +245,7 @@ async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
         logger.error(f"[SYNC] Ошибка синхронизации пользователя {telegram_id} с панелью: {e}")
         return user
 
+    # Если пользователь не найден в панели – сбрасываем локальные данные подписки
     if panel_user is None:
         if (
             user.get("remnawave_user_uuid")
@@ -224,10 +256,12 @@ async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
             await clear_user_subscription_data(DB_PATH, telegram_id)
         return await get_user(DB_PATH, telegram_id)
 
+    # Извлекаем данные из ответа панели
     expires_at = remnawave_client.extract_expire_at_iso(panel_user)
     subscription_url = remnawave_client.extract_subscription_url(panel_user)
     user_uuid = remnawave_client.extract_user_uuid(panel_user)
 
+    # Обновляем локальную БД
     await set_user_subscription_data(
         DB_PATH,
         telegram_id=telegram_id,
@@ -237,8 +271,16 @@ async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
     )
     return await get_user(DB_PATH, telegram_id)
 
-
+# 7. Отрисовка главного меню
 async def render_single_main_menu(chat_id: int) -> Message:
+    """
+    Показывает главное меню пользователю:
+    - синхронизирует подписку,
+    - вычисляет оставшиеся дни,
+    - формирует текст и клавиатуру,
+    - удаляет предыдущее меню (если есть),
+    - отправляет новое сообщение.
+    """
     user = await sync_user_subscription_with_panel(chat_id)
 
     days_left = calculate_days_left(user.get("subscription_expires_at")) if user else 0
@@ -251,6 +293,7 @@ async def render_single_main_menu(chat_id: int) -> Message:
         is_admin=(chat_id == ADMIN_ID),
     )
 
+    # Удаляем старый экземпляр меню, чтобы избежать нагромождения
     old_menu_message_id = await get_last_menu_message_id(DB_PATH, chat_id)
     if old_menu_message_id:
         await delete_message_safe(chat_id, old_menu_message_id)
@@ -262,11 +305,13 @@ async def render_single_main_menu(chat_id: int) -> Message:
         reply_markup=get_main_menu_keyboard(is_admin=(chat_id == ADMIN_ID)),
     )
 
+    # Сохраняем ID нового сообщения меню
     await set_last_menu_message_id(DB_PATH, chat_id, sent_message.message_id)
     return sent_message
 
-
+# 8. Вспомогательные функции для административной панели
 async def show_admin_panel(callback: CallbackQuery) -> None:
+    """Показывает главное меню администратора."""
     text = build_admin_panel_text()
     try:
         if callback.message.photo:
@@ -288,8 +333,8 @@ async def show_admin_panel(callback: CallbackQuery) -> None:
             disable_web_page_preview=True,
         )
 
-
 async def show_admin_access_filters(callback: CallbackQuery) -> None:
+    """Показывает меню фильтров для списка пользователей (все/с доступом/без доступа)."""
     text = (
         "👥 <b>Управление доступом</b>\n\n"
         "Выберите, какой список пользователей открыть."
@@ -314,12 +359,12 @@ async def show_admin_access_filters(callback: CallbackQuery) -> None:
             disable_web_page_preview=True,
         )
 
-
 async def show_admin_users_page(
     callback: CallbackQuery,
     access_value: int,
     page: int,
 ) -> None:
+    """Показывает страницу со списком пользователей по заданному фильтру доступа."""
     total_users = await count_users_by_access(DB_PATH, access_value)
     total_pages = max(1, math.ceil(total_users / ADMIN_USERS_PER_PAGE))
     page = max(1, min(page, total_pages))
@@ -366,13 +411,13 @@ async def show_admin_users_page(
             disable_web_page_preview=True,
         )
 
-
 async def show_admin_user_card(
     callback: CallbackQuery,
     target_user_id: int,
     access_value: int,
     page: int,
 ) -> None:
+    """Показывает карточку конкретного пользователя с возможностью изменить доступ."""
     user = await get_user(DB_PATH, target_user_id)
     if not user:
         await callback.answer("Пользователь не найден.", show_alert=True)
@@ -406,9 +451,17 @@ async def show_admin_user_card(
             disable_web_page_preview=True,
         )
 
+# 9. Обработчики команд и колбэков
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
+    """
+    Обработчик команды /start.
+    - Проверяет реферальный параметр (ref_<id>).
+    - Создаёт/обновляет пользователя в БД.
+    - Если переход по реферальной ссылке – сразу выдаёт доступ.
+    - Иначе запрашивает код доступа.
+    """
     user = message.from_user
     referrer_id = None
     by_referral_link = False
@@ -457,17 +510,19 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     db_user = await get_user(DB_PATH, user.id)
     await delete_user_message_safe(message)
 
+    # Если доступ уже есть – показываем главное меню
     if db_user and db_user.get("access_granted") == 1:
         await state.clear()
         await render_single_main_menu(user.id)
         return
 
+    # Иначе переводим в состояние ожидания кода доступа
     await state.set_state(AccessStates.waiting_for_access_code)
     await bot.send_message(user.id, build_access_prompt_text())
 
-
 @dp.message(AccessStates.waiting_for_access_code)
 async def process_access_code(message: Message, state: FSMContext) -> None:
+    """Проверяет введённый код доступа и при успехе выдаёт доступ."""
     entered_code = (message.text or "").strip()
     await delete_user_message_safe(message)
 
@@ -491,9 +546,10 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
 
     await render_single_main_menu(message.from_user.id)
 
-
+# ---------- Основные колбэки интерфейса ----------
 @dp.callback_query(F.data == "open_tariffs")
 async def open_tariffs(callback: CallbackQuery) -> None:
+    """Открывает список тарифов."""
     try:
         if callback.message.photo:
             await callback.message.edit_caption(
@@ -511,9 +567,9 @@ async def open_tariffs(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
-
 @dp.callback_query(F.data == "referral_menu")
 async def referral_menu_handler(callback: CallbackQuery) -> None:
+    """Показывает реферальное меню со статистикой и ссылкой."""
     telegram_id = callback.from_user.id
     
     referred_count = await count_referred_users(DB_PATH, telegram_id)
@@ -540,9 +596,9 @@ async def referral_menu_handler(callback: CallbackQuery) -> None:
         
     await callback.answer()
 
-
 @dp.callback_query(F.data == "refresh_main")
 async def refresh_main(callback: CallbackQuery, state: FSMContext) -> None:
+    """Обновляет главное меню (перерисовывает)."""
     await state.clear()
     try:
         await delete_message_safe(callback.message.chat.id, callback.message.message_id)
@@ -552,9 +608,9 @@ async def refresh_main(callback: CallbackQuery, state: FSMContext) -> None:
     await render_single_main_menu(callback.from_user.id)
     await callback.answer("Меню обновлено.")
 
-
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery, state: FSMContext) -> None:
+    """Возвращает пользователя в главное меню."""
     await state.clear()
     try:
         await delete_message_safe(callback.message.chat.id, callback.message.message_id)
@@ -564,27 +620,28 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext) -> None:
     await render_single_main_menu(callback.from_user.id)
     await callback.answer()
 
-
+# ---------- Административные колбэки ----------
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery) -> None:
+    """Панель администратора (только для ADMIN_ID)."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await show_admin_panel(callback)
     await callback.answer()
 
-
 @dp.callback_query(F.data == "admin_access_menu")
 async def admin_access_menu(callback: CallbackQuery) -> None:
+    """Меню фильтров для управления доступом."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await show_admin_access_filters(callback)
     await callback.answer()
 
-
 @dp.callback_query(F.data.startswith("admin_users:"))
 async def admin_users_list(callback: CallbackQuery) -> None:
+    """Показывает список пользователей согласно выбранному фильтру и странице."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
@@ -597,9 +654,9 @@ async def admin_users_list(callback: CallbackQuery) -> None:
     )
     await callback.answer()
 
-
 @dp.callback_query(F.data.startswith("admin_user_card:"))
 async def admin_user_card(callback: CallbackQuery) -> None:
+    """Показывает карточку выбранного пользователя."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
@@ -613,9 +670,12 @@ async def admin_user_card(callback: CallbackQuery) -> None:
     )
     await callback.answer()
 
-
 @dp.callback_query(F.data.startswith("admin_toggle_access:"))
 async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    """
+    Переключает доступ пользователя (вкл/выкл) по команде администратора.
+    Если доступ отключается – чистит меню у пользователя.
+    """
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
@@ -629,6 +689,7 @@ async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext
     logger.info(f"Администратор изменил статус доступа пользователя {target_user_id} на {new_access}")
     await set_user_access(DB_PATH, target_user_id, new_access)
 
+    # Если доступ забрали – удаляем у пользователя меню
     if new_access == 0:
         await state.clear()
         old_menu_message_id = await get_last_menu_message_id(DB_PATH, target_user_id)
@@ -636,6 +697,7 @@ async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext
             await delete_message_safe(target_user_id, old_menu_message_id)
             await set_last_menu_message_id(DB_PATH, target_user_id, None)
 
+    # Обновляем карточку пользователя у администратора
     await show_admin_user_card(
         callback=callback,
         target_user_id=target_user_id,
@@ -644,9 +706,10 @@ async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext
     )
     await callback.answer("Доступ обновлен.")
 
-
+# ---------- Обработка оплаты (FSM) ----------
 @dp.callback_query(F.data.startswith("tariff:"))
 async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор тарифа: запоминаем данные и переходим в состояние ожидания скриншота."""
     tariff_code = callback.data.split(":")[1]
     tariff = TARIFFS.get(tariff_code)
 
@@ -690,9 +753,11 @@ async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
 
     await callback.answer()
 
-
 @dp.message(PaymentStates.waiting_for_screenshot, F.photo)
 async def process_screenshot(message: Message, state: FSMContext) -> None:
+    """
+    Получает скриншот оплаты, сохраняет заявку в БД и отправляет её администратору.
+    """
     data = await state.get_data()
 
     tariff_code = data.get("tariff_code")
@@ -741,6 +806,7 @@ async def process_screenshot(message: Message, state: FSMContext) -> None:
         amount=amount,
     )
 
+    # Отправляем заявку администратору
     await bot.send_photo(
         chat_id=ADMIN_ID,
         photo=screenshot_file_id,
@@ -750,9 +816,9 @@ async def process_screenshot(message: Message, state: FSMContext) -> None:
 
     await render_single_main_menu(message.from_user.id)
 
-
 @dp.message(PaymentStates.waiting_for_screenshot)
 async def process_non_photo_when_waiting_screenshot(message: Message, state: FSMContext) -> None:
+    """Если пользователь отправляет не фото, а что-то другое – просим загрузить фото."""
     await delete_user_message_safe(message)
 
     old_menu_message_id = await get_last_menu_message_id(DB_PATH, message.from_user.id)
@@ -766,9 +832,16 @@ async def process_non_photo_when_waiting_screenshot(message: Message, state: FSM
         reply_markup=get_back_to_tariffs_keyboard(),
     )
 
-
+# ---------- Обработка заявок администратором ----------
 @dp.callback_query(F.data.startswith("admin_approve:"))
 async def admin_approve_request(callback: CallbackQuery) -> None:
+    """
+    Одобрение заявки на оплату:
+    - продлевает подписку в панели Remnawave,
+    - обновляет БД,
+    - начисляет реферальный бонус (если есть),
+    - уведомляет пользователя.
+    """
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
         return
@@ -822,13 +895,13 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
             subscription_expires_at=result.get("expires_at"),
         )
 
-        # Уведомляем покупателя
+        # Уведомляем покупателя об успешном продлении
         await bot.send_message(
             buyer_id,
             build_user_request_accepted_text(request_data["tariff_days"]),
         )
 
-        # ==================== НАЧАЛО РЕФЕРАЛЬНОЙ СИСТЕМЫ ====================
+        # Реферальный бонус: если оплатил реферал – добавляем дни пригласившему
         if REFERRAL_BONUS_DAYS > 0:
             referrer_id = await reward_referrer_if_exists(DB_PATH, new_user_id=buyer_id, bonus_days=REFERRAL_BONUS_DAYS)
             
@@ -853,10 +926,11 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
                         )
                     except Exception as ref_err:
                         logger.error(f"[REFERRAL ERROR] Ошибка синхронизации бонуса с панелью для {referrer_id}: {ref_err}")
-        # ==================== КОНЕЦ РЕФЕРАЛЬНОЙ СИСТЕМЫ ====================
 
+        # Обновляем главное меню покупателя
         await render_single_main_menu(buyer_id)
 
+        # Изменяем клавиатуру у сообщения администратора (заменяем кнопки на "одобрено")
         try:
             await callback.message.edit_reply_markup(
                 reply_markup=get_admin_processed_keyboard("approved"),
@@ -873,9 +947,9 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
         )
         await callback.answer("Ошибка при обработке.", show_alert=True)
 
-
 @dp.callback_query(F.data.startswith("admin_reject:"))
 async def admin_reject_request(callback: CallbackQuery) -> None:
+    """Отклонение заявки: обновляем статус и уведомляем пользователя."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
         return
@@ -915,8 +989,13 @@ async def admin_reject_request(callback: CallbackQuery) -> None:
 
     await callback.answer("Заявка отклонена.")
 
-
+# 10. Фоновый планировщик напоминаний об окончании подписки
 async def reminder_scheduler() -> None:
+    """
+    Периодически проверяет пользователей с активной подпиской:
+    - за 3 дня до окончания отправляет предупреждение,
+    - за 1 день – финальное напоминание.
+    """
     logger.info("[REMINDER] Фоновый планировщик напоминаний успешно запущен.")
     while True:
         try:
@@ -926,6 +1005,7 @@ async def reminder_scheduler() -> None:
             for user in users:
                 telegram_id = user["telegram_id"]
 
+                # Синхронизируем данные с панелью
                 synced_user = await sync_user_subscription_with_panel(telegram_id)
                 if not synced_user:
                     continue
@@ -935,11 +1015,12 @@ async def reminder_scheduler() -> None:
                     continue
 
                 days_left = calculate_days_left(expires_at)
-                expiry_date_key = expires_at.split("T")[0]
+                expiry_date_key = expires_at.split("T")[0]  # используем дату как ключ
 
+                # Отправка напоминания за 3 дня
                 if days_left == 3:
                     if not await was_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_3_days", expiry_date_key):
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05)  # небольшая задержка между сообщениями
                         try:
                             logger.info(f"[REMINDER] Отправка уведомления за 3 дня пользователю {telegram_id}")
                             await bot.send_message(telegram_id, build_expiry_three_days_reminder_text())
@@ -947,6 +1028,7 @@ async def reminder_scheduler() -> None:
                         except Exception as e:
                             logger.error(f"[REMINDER] Ошибка отправки (3 дня) для {telegram_id}: {e}")
 
+                # Отправка напоминания за 1 день
                 elif days_left == 1:
                     if not await was_expiry_reminder_sent_by_type(DB_PATH, telegram_id, "expiry_1_day", expiry_date_key):
                         await asyncio.sleep(0.05)
@@ -962,8 +1044,9 @@ async def reminder_scheduler() -> None:
             
         await asyncio.sleep(REMIDER_CHECK_INTERVAL_SECONDS)
 
-
+# 11. Основная асинхронная функция запуска бота
 async def main() -> None:
+    """Инициализация БД, проверка конфигурации, запуск polling и планировщика."""
     # Валидация критических переменных среды
     if not BOT_TOKEN:
         logger.critical("Конфигурация повреждена: отсутствует BOT_TOKEN в файле конфигурации окружения.")
@@ -1002,7 +1085,7 @@ async def main() -> None:
     finally:
         logger.info("Работа бота завершена.")
 
-
+# 12. Точка входа
 if __name__ == "__main__":
     try:
         asyncio.run(main())
