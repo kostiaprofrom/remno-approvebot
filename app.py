@@ -1,5 +1,3 @@
-
-# Импорт стандартных библиотек
 import asyncio
 import math
 import os
@@ -13,9 +11,10 @@ from dotenv import load_dotenv
 # 1. Настройка системы логирования
 
 def setup_logging():
-    # Чтение уровня логирования из переменной окружения (по умолчанию INFO)
+    from dotenv import load_dotenv
+    load_dotenv()
+
     env_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    # Сопоставление строковых значений с константами logging
     levels = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -25,7 +24,6 @@ def setup_logging():
     }
     log_level = levels.get(env_level, logging.INFO)
 
-    # Формат вывода: время [уровень] имя_логгера: сообщение
     log_format = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
