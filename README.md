@@ -32,7 +32,7 @@
 Подключитесь к серверу по SSH от имени `root` и выполните команду:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/remnabotscrypt.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh)
 
 ```
 
