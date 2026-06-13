@@ -34,7 +34,7 @@ draw_banner() {
     clear
     echo -e "${MAGENTA}${BOLD}╭────────────────────────────────────────────────────╮"
     echo -e "│             R E M N O   A P P R O V E              │"
-    echo -e "│                 Bot Manager v1.0                   │"
+    echo -e "│                 Bot Manager v1.2                   │"
     echo -e "╰────────────────────────────────────────────────────╯${RESET}"
 }
 
@@ -42,7 +42,6 @@ draw_banner() {
 # СИСТЕМНЫЕ ФУНКЦИИ И УТИЛИТЫ
 # ==============================================================================
 
-# Проверка зависимостей
 check_deps() {
     local deps=(git python3 python3-venv python3-pip curl nano)
     info "Проверка системных зависимостей..."
@@ -77,6 +76,9 @@ install_bot() {
     info "Клонирование репозитория GitHub..."
     git clone -q "$REPO_URL" "$APP_DIR"
     
+    # ФИКС ОШИБКИ PIP
+    sed -i '/^logging/d' "$APP_DIR/requirements.txt"
+    
     info "Настройка виртуального окружения Python..."
     python3 -m venv "$APP_DIR/venv"
     source "$APP_DIR/venv/bin/activate"
@@ -84,7 +86,6 @@ install_bot() {
     info "Установка зависимостей (requirements.txt)..."
     pip install -q -r "$APP_DIR/requirements.txt"
 
-    # Настройка .env
     info "Настройка конфигурации (.env)..."
     if [ -f "$APP_DIR/.env.example" ]; then
         cp "$APP_DIR/.env.example" "$APP_DIR/.env"
@@ -129,7 +130,6 @@ EOF
     systemctl enable $SERVICE_NAME >/dev/null 2>&1
     systemctl start $SERVICE_NAME
 
-    # Установка ярлыка в систему
     if [ "$(realpath "$0")" != "$SCRIPT_PATH" ]; then
         cp "$0" "$SCRIPT_PATH"
         chmod +x "$SCRIPT_PATH"
@@ -143,7 +143,98 @@ EOF
 }
 
 # ==============================================================================
-# ПАНЕЛЬ ИНФОРМАЦИИ (ДАШБОРД)
+# ОБНОВЛЕНИЕ БОТА
+# ==============================================================================
+
+update_bot() {
+    draw_banner
+    if [ ! -d "$APP_DIR" ]; then
+        error "Бот не установлен! Сначала выполните установку."
+        sleep 2
+        return
+    fi
+
+    echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
+    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                       ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)      ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)        ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                      ${CYAN}│${RESET}"
+    echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
+    read -r -p " Выберите действие [0-2]: " up_act
+
+    if [[ "$up_act" == "0" ]]; then return; fi
+    if [[ "$up_act" != "1" && "$up_act" != "2" ]]; then warn "Неверный ввод."; sleep 1; return; fi
+
+    info "Остановка службы..."
+    systemctl stop $SERVICE_NAME
+
+    info "Резервное копирование текущего .env..."
+    cp "$APP_DIR/.env" "$APP_DIR/.env.backup"
+
+    info "Получение обновлений из GitHub..."
+    cd "$APP_DIR" || exit
+    git fetch --all >/dev/null 2>&1
+    local branch=$(git rev-parse --abbrev-ref HEAD)
+    git reset --hard origin/$branch >/dev/null 2>&1
+    
+    sed -i '/^logging/d' "$APP_DIR/requirements.txt"
+
+    info "Обновление зависимостей Python..."
+    source "$APP_DIR/venv/bin/activate"
+    pip install -q -r "$APP_DIR/requirements.txt"
+
+    if [[ "$up_act" == "1" ]]; then
+        info "Восстановление старого .env файла..."
+        cp "$APP_DIR/.env.backup" "$APP_DIR/.env"
+    elif [[ "$up_act" == "2" ]]; then
+        info "Сброс .env файла на новый шаблон..."
+        if [ -f "$APP_DIR/.env.example" ]; then
+            cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+        fi
+        echo -e "   ${DIM}Ваш старый конфигурационный файл сохранен как .env.backup${RESET}"
+        sleep 2
+        nano "$APP_DIR/.env"
+    fi
+
+    info "Запуск службы..."
+    systemctl start $SERVICE_NAME
+    success "Бот успешно обновлен до последней версии!"
+    sleep 2
+}
+
+# ==============================================================================
+# ПРОСМОТР ЛОГОВ
+# ==============================================================================
+
+show_logs() {
+    while true; do
+        draw_banner
+        echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
+        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)              ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  2) 📄 Подробные логи (последние 500 строк)        ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                                ${CYAN}│${RESET}"
+        echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
+        read -r -p " Выберите действие [0-2]: " log_act
+
+        case "$log_act" in
+            1) 
+                info "Запуск Live-логов. Для выхода нажмите Ctrl+C"
+                sleep 2
+                journalctl -u $SERVICE_NAME -f
+                ;;
+            2) 
+                info "Открываю последние 500 строк (для выхода из логов нажмите 'q')"
+                sleep 2
+                journalctl -u $SERVICE_NAME -n 500 --no-pager | less
+                ;;
+            0) return ;;
+            *) warn "Неверный ввод."; sleep 1 ;;
+        esac
+    done
+}
+
+# ==============================================================================
+# ДАШБОРД (СТАТУС)
 # ==============================================================================
 
 show_info() {
@@ -161,19 +252,19 @@ show_info() {
     local admin_id=$(grep "^ADMIN_ID=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
     [[ -z "$admin_id" ]] && admin_id="Не настроен"
 
-    local pad_1=$((30 - ${#txt_bot}))
-    local pad_2=$((30 - ${#is_installed}))
-    local pad_3=$((30 - ${#bot_token}))
-    local pad_4=$((30 - ${#admin_id}))
+    # Математика для точного выравнивания правой границы (строго 52 символа)
+    local pad_1=$((31 - ${#txt_bot}))
+    local pad_2=$((31 - ${#is_installed}))
+    local pad_3=$((31 - ${#bot_token}))
+    local pad_4=$((31 - ${#admin_id}))
 
     clear
     draw_banner
     echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    printf "${CYAN}│${RESET} 🤖 Бот установлен:  ${BOLD}%s${RESET}%*s ${CYAN}│${RESET}\n" "$is_installed" "$pad_2" ""
-    printf "${CYAN}│${RESET} ⚙️  Служба (Bot):    %s%s${RESET}%*s ${CYAN}│${RESET}\n" "$clr_bot" "$txt_bot" "$pad_1" ""
-    echo -e "${CYAN}├────────────────────────────────────────────────────┤${RESET}"
-    printf "${CYAN}│${RESET} 🔑 Токен:           ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$bot_token" "$pad_3" ""
-    printf "${CYAN}│${RESET} 👤 Admin ID:        ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$admin_id" "$pad_4" ""
+    printf "${CYAN}│${RESET} 🤖 Бот:            ${BOLD}%s${RESET}%*s ${CYAN}│${RESET}\n" "$is_installed" "$pad_2" ""
+    printf "${CYAN}│${RESET} 📦 Служба:         %s%s${RESET}%*s ${CYAN}│${RESET}\n" "$clr_bot" "$txt_bot" "$pad_1" ""
+    printf "${CYAN}│${RESET} 🔑 Токен:          ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$bot_token" "$pad_3" ""
+    printf "${CYAN}│${RESET} 👤 Admin ID:       ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$admin_id" "$pad_4" ""
     echo -e "${CYAN}╰────────────────────────────────────────────────────╯${RESET}"
     
     echo ""
@@ -233,16 +324,12 @@ uninstall_all() {
 
     info "Запущен процесс полной очистки..."
     
-    echo -e "   ${DIM}Остановка и удаление службы...${RESET}"
     systemctl stop $SERVICE_NAME >/dev/null 2>&1
     systemctl disable $SERVICE_NAME >/dev/null 2>&1
     rm -f /etc/systemd/system/$SERVICE_NAME
     systemctl daemon-reload
     
-    echo -e "   ${DIM}Удаление файлов бота...${RESET}"
     rm -rf "$APP_DIR"
-    
-    echo -e "   ${DIM}Удаление системного ярлыка...${RESET}"
     rm -f "$SCRIPT_PATH"
     
     success "Система очищена. Бот удален."
@@ -258,27 +345,31 @@ main_menu() {
         draw_banner
         echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
         echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                             ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  2) ▶️  Запустить (Start)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  3) ⏹️  Остановить (Stop)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  4) 🔄 Перезапустить (Restart)                     ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  5) 📊 Статус (Dashboard)                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  6) ⚙️  Настройки (редактировать .env)              ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  2) 🔄 Обновить бота (из GitHub)                 ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                           ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                           ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                     ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                          ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                   ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                          ${CYAN}│${RESET}"
         echo -e "${CYAN}├────────────────────────────────────────────────────┤${RESET}"
-        echo -e "${CYAN}│${RESET}  7) ${RED}🗑️  Удалить бота${RESET}                                ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                                ${CYAN}│${RESET}"
         echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                       ${CYAN}│${RESET}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
-        read -r -p " Выберите действие [0-7]: " act
+        read -r -p " Выберите действие [0-9]: " act
 
         case "$act" in
             1) install_bot ;;
-            2) manage_service start "запуск службы" ;;
-            3) manage_service stop "остановка службы" ;;
-            4) manage_service restart "перезапуск службы" ;;
-            5) show_info ;;
-            6) edit_env ;;
-            7) uninstall_all ;;
+            2) update_bot ;;
+            3) manage_service start "запуск службы" ;;
+            4) manage_service stop "остановка службы" ;;
+            5) manage_service restart "перезапуск службы" ;;
+            6) show_info ;;
+            7) show_logs ;;
+            8) edit_env ;;
+            9) uninstall_all ;;
             0) clear; exit 0 ;;
-            *) warn "Неверный ввод, выберите пункт от 0 до 7."; sleep 1 ;;
+            *) warn "Неверный ввод, выберите пункт от 0 до 9."; sleep 1 ;;
         esac
     done
 }
