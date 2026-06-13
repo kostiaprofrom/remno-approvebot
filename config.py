@@ -76,3 +76,11 @@ TARIFFS = {
         price=int(os.getenv("PRICE_12", "4800")),
     ),
 }
+# Настройки пробного периода (Trial)
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "3").strip())
+TRIAL_BUTTON_ENABLED = os.getenv("TRIAL_BUTTON_ENABLED", "False").strip().lower() == "true"
+# Настройки кнопки поддержки
+SUPPORT_LINK = os.getenv("SUPPORT_LINK", "").strip()
+SUPPORT_BUTTON_ENABLED = os.getenv("SUPPORT_BUTTON_ENABLED", "False").strip().lower() == "true"
+# Настройка доступности реферальной программы
+REFERRAL_REQUIRE_PAYMENT = os.getenv("REFERRAL_REQUIRE_PAYMENT", "True").strip().lower() == "true"

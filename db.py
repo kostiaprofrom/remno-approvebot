@@ -69,6 +69,9 @@ async def init_db(db_path: str) -> None:
         if "referred_by" not in columns:
             await db.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER DEFAULT NULL")
 
+        if "has_used_trial" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN has_used_trial INTEGER DEFAULT 0")
+
         await db.commit()
 
 
@@ -429,3 +432,27 @@ async def reward_referrer_if_exists(db_path: str, new_user_id: int, bonus_days: 
         
         await db.commit()
         return referrer_id
+
+
+async def activate_user_trial(db_path: str, telegram_id: int, expires_at_iso: str) -> None:
+    """Записывает в БД дату окончания триала и выставляет флаг использования."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("""
+            UPDATE users
+            SET subscription_expires_at = ?,
+                has_used_trial = 1
+            WHERE telegram_id = ?
+        """, (expires_at_iso, telegram_id))
+        await db.commit()
+        
+async def has_approved_payments(db_path: str, telegram_id: int) -> bool:
+    """Проверяет, есть ли у пользователя хотя бы одна одобренная заявка на оплату."""
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("""
+            SELECT 1 
+            FROM requests 
+            WHERE telegram_id = ? AND status = 'approved' 
+            LIMIT 1
+        """, (telegram_id,))
+        row = await cursor.fetchone()
+        return row is not None

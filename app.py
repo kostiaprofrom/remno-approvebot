@@ -3,7 +3,7 @@ import math
 import os
 import sys
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Загрузка переменных окружения из .env файла
 from dotenv import load_dotenv
@@ -81,6 +81,9 @@ from config import (
     REMIDER_CHECK_INTERVAL_SECONDS,
     ADMIN_USERS_PER_PAGE,
     REFERRAL_BONUS_DAYS,
+    TRIAL_DAYS,
+    TRIAL_BUTTON_ENABLED,
+    REFERRAL_REQUIRE_PAYMENT,
 )
 
 # Состояния для FSM
@@ -123,6 +126,8 @@ from db import (
     get_referrer_id,
     count_referred_users,
     reward_referrer_if_exists,
+    activate_user_trial,
+    has_approved_payments,
 )
 
 # Генераторы текстов
@@ -272,17 +277,26 @@ async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
 # 7. Отрисовка главного меню
 async def render_single_main_menu(chat_id: int) -> Message:
     """
-    Показывает главное меню пользователю:
-    - синхронизирует подписку,
-    - вычисляет оставшиеся дни,
-    - формирует текст и клавиатуру,
-    - удаляет предыдущее меню (если есть),
-    - отправляет новое сообщение.
+    Показывает главное меню пользователю с учетом триал-периода и истории оплат.
     """
     user = await sync_user_subscription_with_panel(chat_id)
 
-    days_left = calculate_days_left(user.get("subscription_expires_at")) if user else 0
+    expires_at = user.get("subscription_expires_at") if user else None
+    days_left = calculate_days_left(expires_at) if user else 0
     subscription_url = user.get("subscription_url") if user else None
+    has_used_trial = bool(user.get("has_used_trial", 0)) if user else True
+
+    # Проверяем, были ли у пользователя одобренные оплаты
+    paid_user = await has_approved_payments(DB_PATH, chat_id)
+
+    # Кнопка триала доступна, если не израсходована и нет активной подписки
+    show_trial_button = TRIAL_BUTTON_ENABLED and (not has_used_trial) and (days_left <= 0)
+    
+    # Кнопка рефералки
+    if not REFERRAL_REQUIRE_PAYMENT:
+        show_referral_button = True
+    else:
+        show_referral_button = bool(paid_user)
 
     text = build_main_menu_text(
         days_left=days_left,
@@ -291,7 +305,6 @@ async def render_single_main_menu(chat_id: int) -> Message:
         is_admin=(chat_id == ADMIN_ID),
     )
 
-    # Удаляем старый экземпляр меню, чтобы избежать нагромождения
     old_menu_message_id = await get_last_menu_message_id(DB_PATH, chat_id)
     if old_menu_message_id:
         await delete_message_safe(chat_id, old_menu_message_id)
@@ -300,7 +313,11 @@ async def render_single_main_menu(chat_id: int) -> Message:
         chat_id=chat_id,
         text=text,
         image_path=HERO_IMAGE_PATH,
-        reply_markup=get_main_menu_keyboard(is_admin=(chat_id == ADMIN_ID)),
+        reply_markup=get_main_menu_keyboard(
+            is_admin=(chat_id == ADMIN_ID), 
+            show_trial_button=show_trial_button,
+            show_referral_button=show_referral_button  # Передаем статус
+        ),
     )
 
     # Сохраняем ID нового сообщения меню
@@ -450,6 +467,67 @@ async def show_admin_user_card(
         )
 
 # 9. Обработчики команд и колбэков
+@dp.callback_query(F.data == "activate_trial")
+async def process_activate_trial(callback: CallbackQuery) -> None:
+    """Обработка активации пробного периода."""
+    chat_id = callback.from_user.id
+    
+    # 1. Повторно синхронизируем и запрашиваем данные пользователя для защиты от race condition
+    user = await sync_user_subscription_with_panel(chat_id)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    days_left = calculate_days_left(user.get("subscription_expires_at"))
+    has_used_trial = bool(user.get("has_used_trial", 0))
+
+    # На всякий случай проверяем глобальный флаг
+    if not TRIAL_BUTTON_ENABLED:
+        await callback.answer("Пробный период недоступен.", show_alert=True)
+        await render_single_main_menu(chat_id)
+        return
+
+    # 2. Проверка условий активации
+    if has_used_trial or days_left > 0:
+        await callback.answer("Пробный период недоступен.", show_alert=True)
+        # Обновляем меню, чтобы убрать неактуальную кнопку
+        await render_single_main_menu(chat_id)
+        return
+
+    # 3. Логика успешного выполнения
+    now = datetime.now(timezone.utc)
+    trial_expiry = now + timedelta(days=TRIAL_DAYS)
+    trial_expiry_iso = trial_expiry.isoformat().replace("+00:00", "Z")
+
+    try:
+        # Интеграция с внешней панелью Remnawave
+        # Метод ensure_user_and_extend создаст пользователя в панели, если его нет, или продлит
+        await remnawave_client.ensure_user_and_extend(
+            telegram_id=chat_id,
+            telegram_username=callback.from_user.username,
+            days=TRIAL_DAYS,
+            current_user_uuid=user.get("remnawave_user_uuid")
+        )
+        
+        # Обновляем локальную базу данных
+        await activate_user_trial(DB_PATH, chat_id, trial_expiry_iso)
+        
+        # Форматируем дату для вывода пользователю (ДД.ММ.ГГГГ)
+        formatted_date = trial_expiry.strftime("%d.%m.%Y")
+        
+        await callback.answer("Пробный период успешно активирован! 🎉", show_alert=False)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"🎁 <b>Пробный период на {TRIAL_DAYS} дней активирован!</b>\nДоступ предоставлен до {formatted_date}."
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при активации пробного периода для {chat_id}: {e}")
+        await callback.answer("Произошла ошибка при подключении к серверу. Попробуйте позже.", show_alert=True)
+        return
+
+    # 4. Перерисовываем главное меню (кнопка исчезнет, так как has_used_trial станет True)
+    await render_single_main_menu(chat_id)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
@@ -544,7 +622,7 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
 
     await render_single_main_menu(message.from_user.id)
 
-# ---------- Основные колбэки интерфейса ----------
+# Основные колбэки интерфейса
 @dp.callback_query(F.data == "open_tariffs")
 async def open_tariffs(callback: CallbackQuery) -> None:
     """Открывает список тарифов."""
@@ -565,10 +643,15 @@ async def open_tariffs(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
+
 @dp.callback_query(F.data == "referral_menu")
 async def referral_menu_handler(callback: CallbackQuery) -> None:
     """Показывает реферальное меню со статистикой и ссылкой."""
     telegram_id = callback.from_user.id
+    
+    if REFERRAL_REQUIRE_PAYMENT and not await has_approved_payments(DB_PATH, telegram_id):
+        await callback.answer("Реферальная программа доступна только после первой оплаты подписки.", show_alert=True)
+        return
     
     referred_count = await count_referred_users(DB_PATH, telegram_id)
     bot_info = await bot.get_me()

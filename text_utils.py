@@ -137,17 +137,42 @@ def build_tariffs_text() -> str:
     return get_env_text("TEXT_TARIFFS", default)
 
 
+from html import escape
+import os
+
 def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str) -> str:
-    default = (
+
+    default_template = (
         "💳 <b>Оплата подписки</b>\n\n"
         "📦 <b>Тариф:</b> {tariff_title}\n"
-        "💰 <b>Сумма:</b> {amount} ₽\n"
-        "🏦 <b>Реквизиты для оплаты:</b>\n"
-        "📱 Номер телефона: <code>+7 903 948 24 92</code>\n"
-        "🏷 СБП (Система быстрых платежей)\n"
-        "✅ Доступные банки: <b>Сбер</b>, <b>Т-Банк</b>\n\n"
-        "После оплаты направьте <b>скриншот</b> для подтверждения👇"
+        "💰 <b>Сумма:</b> {amount} ₽\n\n"
+        "После оплаты отправьте скриншот."
     )
+    
+    raw_template = os.getenv("TEXT_TARIFF_PAYMENT", default_template)
+    template = raw_template.replace("\\n", "\n")
+    
+    safe_title = escape(tariff_title)
+    
+    if payment_link and payment_link.strip().lower() != "none":
+        safe_link = escape(payment_link.strip(), quote=True)
+        
+        try:
+            return template.format(
+                tariff_title=safe_title,
+                amount=amount,
+                payment_link=safe_link
+            )
+        except KeyError:
+            return template.format(tariff_title=safe_title, amount=amount)
+            
+    else:
+        return template.format(
+            tariff_title=safe_title,
+            amount=amount
+        )
+        
+    return header + body
     
     template = get_env_text("TEXT_TARIFF_PAYMENT", default)
     return template.format(tariff_title=escape(tariff_title), amount=amount, payment_link=payment_link)
