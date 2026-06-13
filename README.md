@@ -25,6 +25,13 @@
 ---
 
 ## 🚀 Быстрый старт
+Подходит только для debian и ubuntu
+Подключитесь к серверу по SSH от имени `root` и выполните команду:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/remnabotscrypt.sh)
+
+```
 
 ### Требования
 Python 3.10+
