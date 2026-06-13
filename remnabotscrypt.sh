@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Форсируем UTF-8 для корректного отображения кириллицы в nano и логах
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+export LANGUAGE=C.UTF-8
+
 # ==============================================================================
 # REMNO APPROVE BOT MANAGER
 # Автоматизированный скрипт для управления ботом
@@ -10,6 +15,7 @@ APP_DIR="/opt/remno-approvebot"
 SERVICE_NAME="remnabot.service"
 REPO_URL="https://github.com/kostiaprofrom/remno-approvebot.git"
 SCRIPT_PATH="/usr/local/bin/remnabot"
+SCRIPT_URL="https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh"
 
 # --- ЦВЕТА И ЭСТЕТИКА (ANSI Escape-коды) ---
 RESET=$'\033[0m'
@@ -34,7 +40,7 @@ draw_banner() {
     clear
     echo -e "${MAGENTA}${BOLD}╭────────────────────────────────────────────────────╮"
     echo -e "│             R E M N O   A P P R O V E              │"
-    echo -e "│                 Bot Manager v1.2                   │"
+    echo -e "│                 Bot Manager v1.4                   │"
     echo -e "╰────────────────────────────────────────────────────╯${RESET}"
 }
 
@@ -130,10 +136,9 @@ EOF
     systemctl enable $SERVICE_NAME >/dev/null 2>&1
     systemctl start $SERVICE_NAME
 
-    if [ "$(realpath "$0")" != "$SCRIPT_PATH" ]; then
-        cp "$0" "$SCRIPT_PATH"
-        chmod +x "$SCRIPT_PATH"
-    fi
+    info "Создание глобальной команды (remnabot)..."
+    curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
+    chmod +x "$SCRIPT_PATH"
 
     echo ""
     success "ПРОЦЕСС УСТАНОВКИ УСПЕШНО ЗАВЕРШЕН!"
@@ -155,10 +160,10 @@ update_bot() {
     fi
 
     echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                       ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)      ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)        ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                      ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                     ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)     ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)       ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                     ${CYAN}│${RESET}"
     echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
     read -r -p " Выберите действие [0-2]: " up_act
 
@@ -195,10 +200,14 @@ update_bot() {
         sleep 2
         nano "$APP_DIR/.env"
     fi
+    
+    # Обновление самого скрипта (меню)
+    curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
+    chmod +x "$SCRIPT_PATH"
 
     info "Запуск службы..."
     systemctl start $SERVICE_NAME
-    success "Бот успешно обновлен до последней версии!"
+    success "Бот и меню успешно обновлены до последней версии!"
     sleep 2
 }
 
@@ -210,9 +219,9 @@ show_logs() {
     while true; do
         draw_banner
         echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)              ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)             ${CYAN}│${RESET}"
         echo -e "${CYAN}│${RESET}  2) 📄 Подробные логи (последние 500 строк)        ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                                ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                               ${CYAN}│${RESET}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
         read -r -p " Выберите действие [0-2]: " log_act
 
@@ -225,7 +234,7 @@ show_logs() {
             2) 
                 info "Открываю последние 500 строк (для выхода из логов нажмите 'q')"
                 sleep 2
-                journalctl -u $SERVICE_NAME -n 500 --no-pager | less
+                journalctl -u $SERVICE_NAME -n 500 --no-pager | less -R
                 ;;
             0) return ;;
             *) warn "Неверный ввод."; sleep 1 ;;
@@ -252,11 +261,11 @@ show_info() {
     local admin_id=$(grep "^ADMIN_ID=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
     [[ -z "$admin_id" ]] && admin_id="Не настроен"
 
-    # Математика для точного выравнивания правой границы (строго 52 символа)
-    local pad_1=$((31 - ${#txt_bot}))
-    local pad_2=$((31 - ${#is_installed}))
-    local pad_3=$((31 - ${#bot_token}))
-    local pad_4=$((31 - ${#admin_id}))
+    # Математика для точного выравнивания правой границы (строго 50 символов внутри рамки)
+    local pad_1=$((29 - ${#txt_bot}))
+    local pad_2=$((29 - ${#is_installed}))
+    local pad_3=$((29 - ${#bot_token}))
+    local pad_4=$((29 - ${#admin_id}))
 
     clear
     draw_banner
@@ -344,17 +353,17 @@ main_menu() {
     while true; do
         draw_banner
         echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                             ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                           ${CYAN}│${RESET}"
         echo -e "${CYAN}│${RESET}  2) 🔄 Обновить бота (из GitHub)                 ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                     ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                   ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                          ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                          ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                          ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                    ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                        ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                 ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                        ${CYAN}│${RESET}"
         echo -e "${CYAN}├────────────────────────────────────────────────────┤${RESET}"
-        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                                ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                       ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                              ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                     ${CYAN}│${RESET}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
         read -r -p " Выберите действие [0-9]: " act
 
