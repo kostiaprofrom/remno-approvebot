@@ -145,8 +145,17 @@ def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str)
     default_template = (
         "💳 <b>Оплата подписки</b>\n\n"
         "📦 <b>Тариф:</b> {tariff_title}\n"
+<<<<<<< HEAD
         "💰 <b>Сумма:</b> {amount} ₽\n\n"
         "После оплаты отправьте скриншот."
+=======
+        "💰 <b>Сумма:</b> {amount} ₽\n"
+        "🏦 <b>Реквизиты для оплаты:</b>\n"
+        "📱 Номер телефона: <code>12341341</code>\n"
+        "🏷 СБП (Система быстрых платежей)\n"
+        "✅ Доступные банки: <b>Сбер</b>, <b>Т-Банк</b>\n\n"
+        "После оплаты направьте <b>скриншот</b> для подтверждения👇"
+>>>>>>> 6895c5a38fcbd90ebff4552fea1dbad2012617e8
     )
     
     raw_template = os.getenv("TEXT_TARIFF_PAYMENT", default_template)

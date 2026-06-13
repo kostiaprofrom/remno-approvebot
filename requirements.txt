@@ -2,4 +2,8 @@ aiogram
 python-dotenv
 aiosqlite
 aiohttp
+<<<<<<< HEAD
 requests
+=======
+requests
+>>>>>>> 6895c5a38fcbd90ebff4552fea1dbad2012617e8
