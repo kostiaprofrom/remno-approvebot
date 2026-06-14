@@ -179,7 +179,13 @@ remnawave_client = RemnawaveClient(
     base_url=REMNAWAVE_BASE_URL,
     token=REMNAWAVE_TOKEN,
     default_squad_uuid=REMNAWAVE_DEFAULT_SQUAD_UUID,
+    verify_ssl=True
 )
+
+@dp.shutdown()
+async def on_shutdown():
+    await remnawave_client.close()
+    print("Сессия API успешно закрыта.")
 
 # 5. Вспомогательные функции для работы с сообщениями
 
