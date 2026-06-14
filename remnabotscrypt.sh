@@ -66,7 +66,7 @@ check_deps() {
         exit 1
     fi
     
-    local deps=(git python3 python3-venv python3-pip curl nano cron)
+    local deps=(git python3 python3-venv python3-pip curl nano cron zip unzip)
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null && ! dpkg -l | grep -q "^ii  $dep "; then
             msg="Установка пакета: $dep..."
@@ -226,12 +226,10 @@ update_bot() {
 
     info "Создание бэкапа перед обновлением..."
     mkdir -p "$BACKUP_DIR"
-    local bname="update_$(date +%Y-%m-%d_%H-%M-%S)"
-    mkdir -p "$BACKUP_DIR/$bname"
+    local bname="update_$(date +%Y-%m-%d_%H-%M-%S).zip"
     
-    # Сохраняем ТОЛЬКО .env и базу данных в долгосрочный бэкап (assets сюда не копируем)
-    [ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$bname/"
-    [ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$bname/"
+    cd "$APP_DIR" || exit
+    [ -f ".env" ] || [ -f "data/bot.db" ] && zip -q "$BACKUP_DIR/$bname" .env data/bot.db 2>/dev/null
     
     echo -e "   ${GREEN}✔${RESET} ${DIM}Сохранен бэкап: $BACKUP_DIR/$bname${RESET}"
 
@@ -241,11 +239,9 @@ update_bot() {
     info "Резервное копирование временных данных..."
     cp "$APP_DIR/.env" "$APP_DIR/.env.backup"
     
-    # Очищаем старый кэш в /tmp перед копированием, чтобы файлы не наслаивались
     rm -rf "/tmp/remnabot_assets" "/tmp/remnabot_data"
     mkdir -p "/tmp/remnabot_assets" "/tmp/remnabot_data"
     
-    # Сохраняем assets во временную папку, чтобы git reset --hard их не стер и не перезаписал
     if [ -d "$APP_DIR/assets" ]; then
         cp -a "$APP_DIR/assets/." "/tmp/remnabot_assets/" 2>/dev/null
     fi
@@ -266,7 +262,6 @@ update_bot() {
     pip install -q -r "$APP_DIR/requirements.txt"
 
     info "Восстановление файлов БД и ресурсов..."
-    # Возвращаем assets на место (поверх новых файлов из git)
     if [ -d "/tmp/remnabot_assets" ]; then
         mkdir -p "$APP_DIR/assets"
         cp -a "/tmp/remnabot_assets/." "$APP_DIR/assets/" 2>/dev/null
@@ -314,27 +309,36 @@ AUTOBACKUP_CONF="/opt/remno-approvebot/.autobackup"
 [ "$AUTO_ENABLED" != "1" ] && exit 0
 
 mkdir -p "$BACKUP_DIR"
-BNAME="auto_$(date +%Y-%m-%d_%H-%M-%S)"
-mkdir -p "$BACKUP_DIR/$BNAME"
+BNAME="auto_$(date +%Y-%m-%d_%H-%M-%S).zip"
 
-[ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$BNAME/"
-[ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$BNAME/"
+cd "$APP_DIR" || exit 0
+[ -f ".env" ] || [ -f "data/bot.db" ] && zip -q "$BACKUP_DIR/$BNAME" .env data/bot.db 2>/dev/null
 
 if [ "$AUTO_RETAIN" -gt 0 ]; then
     cd "$BACKUP_DIR" || exit 0
-    # Удаляем только бэкапы с пометкой auto_, не трогая ручные и обновления
-    ls -dt auto_* 2>/dev/null | tail -n +$((AUTO_RETAIN + 1)) | xargs -d '\n' -r rm -rf
+    ls -t auto_*.zip 2>/dev/null | tail -n +$((AUTO_RETAIN + 1)) | xargs -d '\n' -r rm -f
 fi
 EOF
     chmod +x "$AUTOBACKUP_SCRIPT"
 }
 
+# Умная функция крона. Переводит часы в дни, если интервал больше 24 часов,
+# чтобы не нарушать синтаксис системного cron-планировщика в Linux.
 update_cron() {
     [ -f "$AUTOBACKUP_CONF" ] && source "$AUTOBACKUP_CONF"
     crontab -l 2>/dev/null | grep -v 'remnabot-autobackup.sh' > /tmp/current_cron
+    
     if [ "$AUTO_ENABLED" == "1" ]; then
-        echo "0 */$AUTO_INTERVAL * * * $AUTOBACKUP_SCRIPT" >> /tmp/current_cron
+        if [ "$AUTO_INTERVAL" -lt 24 ]; then
+            echo "0 */$AUTO_INTERVAL * * * $AUTOBACKUP_SCRIPT" >> /tmp/current_cron
+        elif [ "$AUTO_INTERVAL" -eq 24 ]; then
+            echo "0 0 * * * $AUTOBACKUP_SCRIPT" >> /tmp/current_cron
+        else
+            local days=$((AUTO_INTERVAL / 24))
+            echo "0 0 */$days * * $AUTOBACKUP_SCRIPT" >> /tmp/current_cron
+        fi
     fi
+    
     crontab /tmp/current_cron
     rm -f /tmp/current_cron
 }
@@ -358,11 +362,12 @@ backup_menu() {
                 fi
                 info "Создание ручного бэкапа..."
                 mkdir -p "$BACKUP_DIR"
-                local bname="manual_$(date +%Y-%m-%d_%H-%M-%S)"
-                mkdir -p "$BACKUP_DIR/$bname"
-                [ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$bname/"
-                [ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$bname/"
-                success "Бэкап успешно сохранен в директории:"
+                local bname="manual_$(date +%Y-%m-%d_%H-%M-%S).zip"
+                
+                cd "$APP_DIR" || continue
+                [ -f ".env" ] || [ -f "data/bot.db" ] && zip -q "$BACKUP_DIR/$bname" .env data/bot.db 2>/dev/null
+                
+                success "Бэкап успешно сохранен в архив:"
                 echo -e "${DIM}$BACKUP_DIR/$bname${RESET}"
                 sleep 2.5
                 ;;
@@ -381,15 +386,16 @@ backup_menu() {
                     continue
                 fi
                 
-                if [ ! -d "$BACKUP_DIR" ] || [ -z "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
-                    error "Папка с бэкапами пуста или не существует!"
+                if ! ls "$BACKUP_DIR"/*.zip >/dev/null 2>&1; then
+                    error "Архивы с бэкапами не найдены!"
                     sleep 2
                     continue
                 fi
 
                 echo ""
-                # Получаем список директорий, сортируем по времени (новые сверху)
-                mapfile -t backups < <(ls -1t "$BACKUP_DIR")
+                cd "$BACKUP_DIR" || continue
+                mapfile -t backups < <(ls -1t *.zip 2>/dev/null)
+                cd - >/dev/null
                 
                 echo -e " Доступные бэкапы:"
                 local i=1
@@ -411,8 +417,8 @@ backup_menu() {
                 local selected_bname="${backups[$((b_idx-1))]}"
                 local bpath="$BACKUP_DIR/$selected_bname"
                 
-                if [ ! -f "$bpath/.env" ] && [ ! -f "$bpath/bot.db" ]; then
-                    error "В выбранном бэкапе нет файлов .env или bot.db"
+                if ! unzip -l "$bpath" 2>/dev/null | grep -qE "\.env|bot\.db"; then
+                    error "В выбранном архиве нет файлов .env или bot.db"
                     sleep 2
                     continue
                 fi
@@ -426,34 +432,41 @@ backup_menu() {
 
                 if [[ "$r_act" == "0" ]]; then continue; fi
 
-                info "Остановка бота и восстановление данных..."
+                info "Остановка бота и распаковка данных..."
                 systemctl stop $SERVICE_NAME
+                
+                local tmp_extract="/tmp/remnabot_restore_$$"
+                rm -rf "$tmp_extract"
+                mkdir -p "$tmp_extract"
+                unzip -q "$bpath" -d "$tmp_extract"
                 
                 case "$r_act" in
                     1)
-                        [ -f "$bpath/.env" ] && cp "$bpath/.env" "$APP_DIR/.env"
-                        if [ -f "$bpath/bot.db" ]; then
+                        [ -f "$tmp_extract/.env" ] && cp "$tmp_extract/.env" "$APP_DIR/.env"
+                        if [ -f "$tmp_extract/data/bot.db" ]; then
                             mkdir -p "$APP_DIR/data"
-                            cp "$bpath/bot.db" "$APP_DIR/data/bot.db"
+                            cp "$tmp_extract/data/bot.db" "$APP_DIR/data/bot.db"
                         fi
                         ;;
                     2)
-                        [ -f "$bpath/.env" ] && cp "$bpath/.env" "$APP_DIR/.env"
+                        [ -f "$tmp_extract/.env" ] && cp "$tmp_extract/.env" "$APP_DIR/.env"
                         ;;
                     3)
-                        if [ -f "$bpath/bot.db" ]; then
+                        if [ -f "$tmp_extract/data/bot.db" ]; then
                             mkdir -p "$APP_DIR/data"
-                            cp "$bpath/bot.db" "$APP_DIR/data/bot.db"
+                            cp "$tmp_extract/data/bot.db" "$APP_DIR/data/bot.db"
                         fi
                         ;;
                     *)
                         warn "Неверный выбор. Отмена."
+                        rm -rf "$tmp_extract"
                         systemctl start $SERVICE_NAME
                         sleep 1.5
                         continue
                         ;;
                 esac
                 
+                rm -rf "$tmp_extract"
                 systemctl start $SERVICE_NAME
                 success "Данные успешно восстановлены! Бот запущен."
                 sleep 2
@@ -663,10 +676,6 @@ env_menu() {
         esac
     done
 }
-
-# ==============================================================================
-# ПОЛНОЕ УДАЛЕНИЕ
-# ==============================================================================
 
 # ==============================================================================
 # ПОЛНОЕ УДАЛЕНИЕ
