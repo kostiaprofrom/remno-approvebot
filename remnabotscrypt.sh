@@ -160,10 +160,10 @@ update_bot() {
     fi
 
     echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                     ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)     ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)       ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                     ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                       ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)      ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)        ${CYAN}│${RESET}"
+    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                      ${CYAN}│${RESET}"
     echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
     read -r -p " Выберите действие [0-2]: " up_act
 
@@ -219,9 +219,9 @@ show_logs() {
     while true; do
         draw_banner
         echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)             ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)              ${CYAN}│${RESET}"
         echo -e "${CYAN}│${RESET}  2) 📄 Подробные логи (последние 500 строк)        ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                               ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                                ${CYAN}│${RESET}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
         read -r -p " Выберите действие [0-2]: " log_act
 
@@ -270,10 +270,10 @@ show_info() {
     clear
     draw_banner
     echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    printf "${CYAN}│${RESET} 🤖 Бот:            ${BOLD}%s${RESET}%*s ${CYAN}│${RESET}\n" "$is_installed" "$pad_2" ""
-    printf "${CYAN}│${RESET} 📦 Служба:         %s%s${RESET}%*s ${CYAN}│${RESET}\n" "$clr_bot" "$txt_bot" "$pad_1" ""
-    printf "${CYAN}│${RESET} 🔑 Токен:          ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$bot_token" "$pad_3" ""
-    printf "${CYAN}│${RESET} 👤 Admin ID:       ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$admin_id" "$pad_4" ""
+    printf "${CYAN}│${RESET} 🤖 Бот:              ${BOLD}%s${RESET}%*s ${CYAN}│${RESET}\n" "$is_installed" "$pad_2" ""
+    printf "${CYAN}│${RESET} 📦 Служба:           %s%s${RESET}%*s ${CYAN}│${RESET}\n" "$clr_bot" "$txt_bot" "$pad_1" ""
+    printf "${CYAN}│${RESET} 🔑 Токен:            ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$bot_token" "$pad_3" ""
+    printf "${CYAN}│${RESET} 👤 Admin ID:         ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$admin_id" "$pad_4" ""
     echo -e "${CYAN}╰────────────────────────────────────────────────────╯${RESET}"
     
     echo ""
@@ -353,17 +353,17 @@ main_menu() {
     while true; do
         draw_banner
         echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  2) 🔄 Обновить бота (из GitHub)                 ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                    ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                        ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                 ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                        ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                             ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  2) 🔄 Обновить бота (из GitHub)                   ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                           ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                           ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                     ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                          ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                   ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                          ${CYAN}│${RESET}"
         echo -e "${CYAN}├────────────────────────────────────────────────────┤${RESET}"
-        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                              ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                     ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                               ${CYAN}│${RESET}"
+        echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                      ${CYAN}│${RESET}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
         read -r -p " Выберите действие [0-9]: " act
 
