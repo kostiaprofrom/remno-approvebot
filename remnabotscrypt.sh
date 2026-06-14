@@ -12,6 +12,9 @@ export LANGUAGE=C.UTF-8
 
 # --- КОНФИГУРАЦИЯ И СИСТЕМНЫЕ ПУТИ ---
 APP_DIR="/opt/remno-approvebot"
+BACKUP_DIR="/opt/remno-approvebot-backups"
+AUTOBACKUP_CONF="/opt/remno-approvebot/.autobackup"
+AUTOBACKUP_SCRIPT="/usr/local/bin/remnabot-autobackup.sh"
 SERVICE_NAME="remnabot.service"
 REPO_URL="https://github.com/kostiaprofrom/remno-approvebot.git"
 SCRIPT_PATH="/usr/local/bin/remnabot"
@@ -40,7 +43,7 @@ draw_banner() {
     clear
     echo -e "${MAGENTA}${BOLD}╭────────────────────────────────────────────────────╮"
     echo -e "│             R E M N O   A P P R O V E              │"
-    echo -e "│                 Bot Manager v1.4                   │"
+    echo -e "│                 Bot Manager                        │"
     echo -e "╰────────────────────────────────────────────────────╯${RESET}"
 }
 
@@ -49,18 +52,41 @@ draw_banner() {
 # ==============================================================================
 
 check_deps() {
-    local deps=(git python3 python3-venv python3-pip curl nano)
-    info "Проверка системных зависимостей..."
-    
+    info "Проверка и установка системных зависимостей"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update >/dev/null 2>&1
+    
+    local msg="Обновление списка пакетов (apt update)..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
+    if out=$(apt-get update 2>&1); then
+        echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
+    else
+        echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+        error "Не удалось обновить список пакетов Ubuntu/Debian."
+        echo -e "${DIM}Детали ошибки:\n$out${RESET}"
+        exit 1
+    fi
+    
+    local deps=(git python3 python3-venv python3-pip curl nano cron)
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null && ! dpkg -l | grep -q "^ii  $dep "; then
-            echo -e "   ${DIM}Установка пакета: $dep...${RESET}"
-            apt-get install -yq "$dep" >/dev/null 2>&1
+            msg="Установка пакета: $dep..."
+            echo -n -e "   ${DIM}► ${msg}${RESET}"
+            if out=$(apt-get install -yq "$dep" 2>&1); then
+                echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
+            else
+                echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+                error "Произошла ошибка при установке системного пакета: $dep"
+                echo -e "${DIM}Детали ошибки:\n$out${RESET}"
+                exit 1
+            fi
         fi
     done
-    success "Все зависимости успешно проверены!"
+    
+    msg="Настройка службы cron..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
+    systemctl enable cron >/dev/null 2>&1
+    systemctl start cron >/dev/null 2>&1
+    echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
 }
 
 # ==============================================================================
@@ -79,70 +105,100 @@ install_bot() {
     info "Инициализация мастера установки..."
     check_deps
 
-    info "Клонирование репозитория GitHub..."
-    git clone -q "$REPO_URL" "$APP_DIR"
+    info "Загрузка исходного кода бота"
+    local msg="Клонирование репозитория GitHub..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
+    if out=$(git clone -q "$REPO_URL" "$APP_DIR" 2>&1); then
+        echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
+    else
+        echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+        error "Не удалось клонировать репозиторий с GitHub."
+        echo -e "${DIM}Детали ошибки:\n$out${RESET}"
+        exit 1
+    fi
     
-    # ФИКС ОШИБКИ PIP
+    msg="Применение системных фиксов (logging)..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
     sed -i '/^logging/d' "$APP_DIR/requirements.txt"
+    echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
     
-    info "Настройка виртуального окружения Python..."
-    python3 -m venv "$APP_DIR/venv"
+    info "Настройка Python окружения"
+    msg="Создание виртуального окружения (venv)..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
+    if out=$(python3 -m venv "$APP_DIR/venv" 2>&1); then
+        echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
+    else
+        echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+        error "Не удалось создать виртуальное окружение Python."
+        echo -e "${DIM}Детали ошибки:\n$out${RESET}"
+        exit 1
+    fi
+    
     source "$APP_DIR/venv/bin/activate"
     
-    info "Установка зависимостей (requirements.txt)..."
-    pip install -q -r "$APP_DIR/requirements.txt"
-
-    info "Настройка конфигурации (.env)..."
-    if [ -f "$APP_DIR/.env.example" ]; then
-        cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+    msg="Установка зависимостей (pip install)..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
+    if out=$(pip install -q -r "$APP_DIR/requirements.txt" 2>&1); then
+        echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
     else
-        touch "$APP_DIR/.env"
+        echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+        error "Не удалось установить Python-зависимости (pip)."
+        echo -e "${DIM}Детали ошибки:\n$out${RESET}"
+        exit 1
     fi
 
-    echo -e "\n${BOLD}Пожалуйста, введите необходимые данные:${RESET}"
-    read -r -p "BOT_TOKEN: " BOT_TOKEN
-    read -r -p "ADMIN_ID: " ADMIN_ID
-    read -r -p "ACCESS_CODE: " ACCESS_CODE
-    read -r -p "REMNAWAVE_BASE_URL: " REMNAWAVE_BASE_URL
-    read -r -p "REMNAWAVE_TOKEN: " REMNAWAVE_TOKEN
-    read -r -p "REMNAWAVE_DEFAULT_SQUAD_UUID: " REMNAWAVE_DEFAULT_SQUAD_UUID
+    info "Настройка конфигурации"
+    if [ -f "$APP_DIR/.env.example" ]; then
+        cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+        echo -e "   ${GREEN}✔${RESET} ${DIM}Создан базовый файл .env из шаблона${RESET}"
+    else
+        touch "$APP_DIR/.env"
+        echo -e "   ${GREEN}✔${RESET} ${DIM}Создан пустой файл .env${RESET}"
+    fi
 
-    echo -e "   ${DIM}Запись конфигурации...${RESET}"
-    sed -i "s~^BOT_TOKEN=.*~BOT_TOKEN=$BOT_TOKEN~" "$APP_DIR/.env"
-    sed -i "s~^ADMIN_ID=.*~ADMIN_ID=$ADMIN_ID~" "$APP_DIR/.env"
-    sed -i "s~^ACCESS_CODE=.*~ACCESS_CODE=$ACCESS_CODE~" "$APP_DIR/.env"
-    sed -i "s~^REMNAWAVE_BASE_URL=.*~REMNAWAVE_BASE_URL=$REMNAWAVE_BASE_URL~" "$APP_DIR/.env"
-    sed -i "s~^REMNAWAVE_TOKEN=.*~REMNAWAVE_TOKEN=$REMNAWAVE_TOKEN~" "$APP_DIR/.env"
-    sed -i "s~^REMNAWAVE_DEFAULT_SQUAD_UUID=.*~REMNAWAVE_DEFAULT_SQUAD_UUID=$REMNAWAVE_DEFAULT_SQUAD_UUID~" "$APP_DIR/.env"
-
-    info "Создание системной службы (systemd)..."
+    info "Финальная настройка системы"
+    msg="Генерация службы systemd..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
     cat > /etc/systemd/system/$SERVICE_NAME <<EOF
 [Unit]
 Description=Remno Approve Telegram Bot
 After=network.target
 
 [Service]
+Type=simple
 User=root
 WorkingDirectory=$APP_DIR
-ExecStart=$APP_DIR/venv/bin/python $APP_DIR/app.py
+ExecStart=$APP_DIR/venv/bin/python3 $APP_DIR/app.py
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
 
+    msg="Запуск службы бота..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
     systemctl daemon-reload
     systemctl enable $SERVICE_NAME >/dev/null 2>&1
-    systemctl start $SERVICE_NAME
+    if out=$(systemctl start $SERVICE_NAME 2>&1); then
+        echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
+    else
+        echo -e "\r   ${RED}✖${RESET} ${DIM}${msg}${RESET}"
+        echo -e "   ${DIM}Служба создана, но не запустилась (нужно настроить .env)${RESET}"
+    fi
 
-    info "Создание глобальной команды (remnabot)..."
+    msg="Создание глобальных алиасов и скриптов..."
+    echo -n -e "   ${DIM}► ${msg}${RESET}"
     curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
     chmod +x "$SCRIPT_PATH"
+    generate_autobackup_script
+    echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
 
     echo ""
     success "ПРОЦЕСС УСТАНОВКИ УСПЕШНО ЗАВЕРШЕН!"
-    echo -e "Вызывайте панель управления из любой точки системы командой: ${CYAN}${BOLD}remnabot${RESET}"
+    echo -e " Вызывайте панель управления командой: ${CYAN}${BOLD}remnabot${RESET}"
+    echo -e " ${DIM}Отредактируйте .env или восстановите бэкап через меню, если еще этого не сделали.${RESET}"
     echo ""
     read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
 }
@@ -159,22 +215,43 @@ update_bot() {
         return
     fi
 
-    echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    echo -e "${CYAN}│${RESET} Выберите вариант обновления:                       ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  1) 📦 Сохранить текущий .env (Рекомендуется)      ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  2) 🆕 Обновить .env (создать новый шаблон)        ${CYAN}│${RESET}"
-    echo -e "${CYAN}│${RESET}  0) 🔙 Отмена                                      ${CYAN}│${RESET}"
-    echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
+    echo -e " Выберите вариант обновления:"
+    echo -e "  1)  📦 Сохранить текущий файл настроек (Рекомендуется)"
+    echo -e "  2)  🆕 Обновить файл настроек (Сброс параметров)"
+    echo -e "  0)  🔙 Отмена\n"
     read -r -p " Выберите действие [0-2]: " up_act
 
     if [[ "$up_act" == "0" ]]; then return; fi
     if [[ "$up_act" != "1" && "$up_act" != "2" ]]; then warn "Неверный ввод."; sleep 1; return; fi
 
+    info "Создание бэкапа перед обновлением..."
+    mkdir -p "$BACKUP_DIR"
+    local bname="update_$(date +%Y-%m-%d_%H-%M-%S)"
+    mkdir -p "$BACKUP_DIR/$bname"
+    
+    # Сохраняем ТОЛЬКО .env и базу данных в долгосрочный бэкап (assets сюда не копируем)
+    [ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$bname/"
+    [ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$bname/"
+    
+    echo -e "   ${GREEN}✔${RESET} ${DIM}Сохранен бэкап: $BACKUP_DIR/$bname${RESET}"
+
     info "Остановка службы..."
     systemctl stop $SERVICE_NAME
 
-    info "Резервное копирование текущего .env..."
+    info "Резервное копирование временных данных..."
     cp "$APP_DIR/.env" "$APP_DIR/.env.backup"
+    
+    # Очищаем старый кэш в /tmp перед копированием, чтобы файлы не наслаивались
+    rm -rf "/tmp/remnabot_assets" "/tmp/remnabot_data"
+    mkdir -p "/tmp/remnabot_assets" "/tmp/remnabot_data"
+    
+    # Сохраняем assets во временную папку, чтобы git reset --hard их не стер и не перезаписал
+    if [ -d "$APP_DIR/assets" ]; then
+        cp -a "$APP_DIR/assets/." "/tmp/remnabot_assets/" 2>/dev/null
+    fi
+    if [ -f "$APP_DIR/data/bot.db" ]; then
+        cp "$APP_DIR/data/bot.db" "/tmp/remnabot_data/" 2>/dev/null
+    fi
 
     info "Получение обновлений из GitHub..."
     cd "$APP_DIR" || exit
@@ -187,6 +264,17 @@ update_bot() {
     info "Обновление зависимостей Python..."
     source "$APP_DIR/venv/bin/activate"
     pip install -q -r "$APP_DIR/requirements.txt"
+
+    info "Восстановление файлов БД и ресурсов..."
+    # Возвращаем assets на место (поверх новых файлов из git)
+    if [ -d "/tmp/remnabot_assets" ]; then
+        mkdir -p "$APP_DIR/assets"
+        cp -a "/tmp/remnabot_assets/." "$APP_DIR/assets/" 2>/dev/null
+    fi
+    if [ -f "/tmp/remnabot_data/bot.db" ]; then
+        mkdir -p "$APP_DIR/data"
+        cp "/tmp/remnabot_data/bot.db" "$APP_DIR/data/" 2>/dev/null
+    fi
 
     if [[ "$up_act" == "1" ]]; then
         info "Восстановление старого .env файла..."
@@ -201,14 +289,225 @@ update_bot() {
         nano "$APP_DIR/.env"
     fi
     
-    # Обновление самого скрипта (меню)
     curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
     chmod +x "$SCRIPT_PATH"
+    generate_autobackup_script
 
     info "Запуск службы..."
     systemctl start $SERVICE_NAME
     success "Бот и меню успешно обновлены до последней версии!"
     sleep 2
+}
+
+# ==============================================================================
+# БЭКАПЫ И ВОССТАНОВЛЕНИЕ
+# ==============================================================================
+
+generate_autobackup_script() {
+    cat > "$AUTOBACKUP_SCRIPT" << 'EOF'
+#!/bin/bash
+APP_DIR="/opt/remno-approvebot"
+BACKUP_DIR="/opt/remno-approvebot-backups"
+AUTOBACKUP_CONF="/opt/remno-approvebot/.autobackup"
+
+[ -f "$AUTOBACKUP_CONF" ] && source "$AUTOBACKUP_CONF"
+[ "$AUTO_ENABLED" != "1" ] && exit 0
+
+mkdir -p "$BACKUP_DIR"
+BNAME="auto_$(date +%Y-%m-%d_%H-%M-%S)"
+mkdir -p "$BACKUP_DIR/$BNAME"
+
+[ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$BNAME/"
+[ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$BNAME/"
+
+if [ "$AUTO_RETAIN" -gt 0 ]; then
+    cd "$BACKUP_DIR" || exit 0
+    # Удаляем только бэкапы с пометкой auto_, не трогая ручные и обновления
+    ls -dt auto_* 2>/dev/null | tail -n +$((AUTO_RETAIN + 1)) | xargs -d '\n' -r rm -rf
+fi
+EOF
+    chmod +x "$AUTOBACKUP_SCRIPT"
+}
+
+update_cron() {
+    [ -f "$AUTOBACKUP_CONF" ] && source "$AUTOBACKUP_CONF"
+    crontab -l 2>/dev/null | grep -v 'remnabot-autobackup.sh' > /tmp/current_cron
+    if [ "$AUTO_ENABLED" == "1" ]; then
+        echo "0 */$AUTO_INTERVAL * * * $AUTOBACKUP_SCRIPT" >> /tmp/current_cron
+    fi
+    crontab /tmp/current_cron
+    rm -f /tmp/current_cron
+}
+
+backup_menu() {
+    while true; do
+        draw_banner
+        echo -e " ${DIM}📁 Путь к бэкапам: $BACKUP_DIR${RESET}\n"
+        echo -e "  1)  💾 Принудительный ручной бэкап"
+        echo -e "  2)  ⚙️ Настройка автобэкапа"
+        echo -e "  3)  ♻️ Восстановление из бэкапа"
+        echo -e "  0)  🔙 Назад в меню\n"
+        read -r -p " Выберите действие [0-3]: " b_act
+
+        case "$b_act" in
+            1)
+                if [ ! -d "$APP_DIR" ]; then
+                    error "Бот не установлен! Сначала выполните установку."
+                    sleep 1.5
+                    continue
+                fi
+                info "Создание ручного бэкапа..."
+                mkdir -p "$BACKUP_DIR"
+                local bname="manual_$(date +%Y-%m-%d_%H-%M-%S)"
+                mkdir -p "$BACKUP_DIR/$bname"
+                [ -f "$APP_DIR/.env" ] && cp "$APP_DIR/.env" "$BACKUP_DIR/$bname/"
+                [ -f "$APP_DIR/data/bot.db" ] && cp "$APP_DIR/data/bot.db" "$BACKUP_DIR/$bname/"
+                success "Бэкап успешно сохранен в директории:"
+                echo -e "${DIM}$BACKUP_DIR/$bname${RESET}"
+                sleep 2.5
+                ;;
+            2)
+                if [ ! -d "$APP_DIR" ]; then
+                    error "Бот не установлен! Сначала выполните установку."
+                    sleep 1.5
+                    continue
+                fi
+                autobackup_menu
+                ;;
+            3)
+                if [ ! -d "$APP_DIR" ]; then
+                    error "Сначала установите бота через пункт 1 в главном меню!"
+                    sleep 2
+                    continue
+                fi
+                
+                if [ ! -d "$BACKUP_DIR" ] || [ -z "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
+                    error "Папка с бэкапами пуста или не существует!"
+                    sleep 2
+                    continue
+                fi
+
+                echo ""
+                # Получаем список директорий, сортируем по времени (новые сверху)
+                mapfile -t backups < <(ls -1t "$BACKUP_DIR")
+                
+                echo -e " Доступные бэкапы:"
+                local i=1
+                for b in "${backups[@]}"; do
+                    echo -e "  $i) 📁 $b"
+                    ((i++))
+                done
+                echo -e "  0) 🔙 Отмена\n"
+                
+                read -r -p " Выберите бэкап [0-${#backups[@]}]: " b_idx
+                
+                if [[ "$b_idx" == "0" ]]; then continue; fi
+                if [[ ! "$b_idx" =~ ^[0-9]+$ ]] || [ "$b_idx" -lt 1 ] || [ "$b_idx" -gt "${#backups[@]}" ]; then
+                    warn "Неверный выбор."
+                    sleep 1.5
+                    continue
+                fi
+                
+                local selected_bname="${backups[$((b_idx-1))]}"
+                local bpath="$BACKUP_DIR/$selected_bname"
+                
+                if [ ! -f "$bpath/.env" ] && [ ! -f "$bpath/bot.db" ]; then
+                    error "В выбранном бэкапе нет файлов .env или bot.db"
+                    sleep 2
+                    continue
+                fi
+                
+                echo -e "\n Что именно вы хотите восстановить?"
+                echo -e "  1)  📦 Всё (Базу данных и настройки)"
+                echo -e "  2)  🔧 Только настройки (.env)"
+                echo -e "  3)  🗄️ Только базу данных (bot.db)"
+                echo -e "  0)  🔙 Отмена"
+                read -r -p " Выберите действие [0-3]: " r_act
+
+                if [[ "$r_act" == "0" ]]; then continue; fi
+
+                info "Остановка бота и восстановление данных..."
+                systemctl stop $SERVICE_NAME
+                
+                case "$r_act" in
+                    1)
+                        [ -f "$bpath/.env" ] && cp "$bpath/.env" "$APP_DIR/.env"
+                        if [ -f "$bpath/bot.db" ]; then
+                            mkdir -p "$APP_DIR/data"
+                            cp "$bpath/bot.db" "$APP_DIR/data/bot.db"
+                        fi
+                        ;;
+                    2)
+                        [ -f "$bpath/.env" ] && cp "$bpath/.env" "$APP_DIR/.env"
+                        ;;
+                    3)
+                        if [ -f "$bpath/bot.db" ]; then
+                            mkdir -p "$APP_DIR/data"
+                            cp "$bpath/bot.db" "$APP_DIR/data/bot.db"
+                        fi
+                        ;;
+                    *)
+                        warn "Неверный выбор. Отмена."
+                        systemctl start $SERVICE_NAME
+                        sleep 1.5
+                        continue
+                        ;;
+                esac
+                
+                systemctl start $SERVICE_NAME
+                success "Данные успешно восстановлены! Бот запущен."
+                sleep 2
+                ;;
+            0) return ;;
+            *) warn "Неверный ввод."; sleep 1 ;;
+        esac
+    done
+}
+
+autobackup_menu() {
+    [ ! -f "$AUTOBACKUP_CONF" ] && echo -e "AUTO_ENABLED=0\nAUTO_RETAIN=10\nAUTO_INTERVAL=12" > "$AUTOBACKUP_CONF"
+    
+    while true; do
+        source "$AUTOBACKUP_CONF"
+        local status_text=$([ "$AUTO_ENABLED" == "1" ] && echo -e "${GREEN}ВКЛ${RESET}" || echo -e "${RED}ВЫКЛ${RESET}")
+        
+        draw_banner
+        echo -e " ${DIM}📁 Путь к бэкапам: $BACKUP_DIR${RESET}\n"
+        echo -e "  1)  🔄 Статус автобэкапа: $status_text"
+        echo -e "  2)  🔢 Лимит хранимых версий (Сейчас: $AUTO_RETAIN)"
+        echo -e "  3)  ⏱️  Интервал в часах (Сейчас: $AUTO_INTERVAL)"
+        echo -e "  0)  🔙 Назад\n"
+        read -r -p " Выберите действие [0-3]: " ab_act
+
+        case "$ab_act" in
+            1)
+                local new_status=$([ "$AUTO_ENABLED" == "1" ] && echo "0" || echo "1")
+                sed -i "s/^AUTO_ENABLED=.*/AUTO_ENABLED=$new_status/" "$AUTOBACKUP_CONF"
+                update_cron
+                ;;
+            2)
+                read -r -p " Введите количество хранимых бэкапов (от 1 до 50): " n_ret
+                if [[ "$n_ret" =~ ^[0-9]+$ ]] && [ "$n_ret" -ge 1 ] && [ "$n_ret" -le 50 ]; then
+                    sed -i "s/^AUTO_RETAIN=.*/AUTO_RETAIN=$n_ret/" "$AUTOBACKUP_CONF"
+                else
+                    warn "Нужно ввести число от 1 до 50!"
+                    sleep 1.5
+                fi
+                ;;
+            3)
+                read -r -p " Введите интервал бэкапа в часах (от 1 до 168): " n_int
+                if [[ "$n_int" =~ ^[0-9]+$ ]] && [ "$n_int" -ge 1 ] && [ "$n_int" -le 168 ]; then
+                    sed -i "s/^AUTO_INTERVAL=.*/AUTO_INTERVAL=$n_int/" "$AUTOBACKUP_CONF"
+                    update_cron
+                else
+                    warn "Нужно ввести число от 1 до 168!"
+                    sleep 1.5
+                fi
+                ;;
+            0) return ;;
+            *) warn "Неверный ввод."; sleep 1 ;;
+        esac
+    done
 }
 
 # ==============================================================================
@@ -218,11 +517,9 @@ update_bot() {
 show_logs() {
     while true; do
         draw_banner
-        echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🟢 Live логи (в реальном времени)              ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  2) 📄 Подробные логи (последние 500 строк)        ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🔙 Назад в меню                                ${CYAN}│${RESET}"
-        echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
+        echo -e "  1)  🟢 Live логи (в реальном времени)"
+        echo -e "  2)  📄 Подробные логи (последние 500 строк)"
+        echo -e "  0)  🔙 Назад в меню\n"
         read -r -p " Выберите действие [0-2]: " log_act
 
         case "$log_act" in
@@ -261,33 +558,50 @@ show_info() {
     local admin_id=$(grep "^ADMIN_ID=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
     [[ -z "$admin_id" ]] && admin_id="Не настроен"
 
-    # Математика для точного выравнивания правой границы (строго 50 символов внутри рамки)
-    local pad_1=$((29 - ${#txt_bot}))
-    local pad_2=$((29 - ${#is_installed}))
-    local pad_3=$((29 - ${#bot_token}))
-    local pad_4=$((29 - ${#admin_id}))
-
     clear
     draw_banner
-    echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-    printf "${CYAN}│${RESET} 🤖 Бот:              ${BOLD}%s${RESET}%*s ${CYAN}│${RESET}\n" "$is_installed" "$pad_2" ""
-    printf "${CYAN}│${RESET} 📦 Служба:           %s%s${RESET}%*s ${CYAN}│${RESET}\n" "$clr_bot" "$txt_bot" "$pad_1" ""
-    printf "${CYAN}│${RESET} 🔑 Токен:            ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$bot_token" "$pad_3" ""
-    printf "${CYAN}│${RESET} 👤 Admin ID:         ${DIM}%s${RESET}%*s ${CYAN}│${RESET}\n" "$admin_id" "$pad_4" ""
-    echo -e "${CYAN}╰────────────────────────────────────────────────────╯${RESET}"
+    echo -e " 🤖 Бот установлен:   ${BOLD}${is_installed}${RESET}"
+    echo -e " 📦 Статус службы:    ${clr_bot}${txt_bot}${RESET}"
+    echo -e " 🔑 Токен:            ${DIM}${bot_token}${RESET}"
+    echo -e " 👤 Admin ID:         ${DIM}${admin_id}${RESET}\n"
+
+    echo -e " ${BOLD}📁 Пути для отладки:${RESET}"
+    echo -e "  • Папка бота:       ${DIM}${APP_DIR}${RESET}"
+    echo -e "  • Папка бэкапов:    ${DIM}${BACKUP_DIR}${RESET}"
+    echo -e "  • Системная служба: ${DIM}/etc/systemd/system/${SERVICE_NAME}${RESET}"
+    echo -e "  • Вирт. окружение:  ${DIM}${APP_DIR}/venv${RESET}"
+    echo -e "  • Файл настроек:    ${DIM}${APP_DIR}/.env${RESET}"
+    echo -e "  • База данных:      ${DIM}${APP_DIR}/data/bot.db${RESET}\n"
     
-    echo ""
     read -n 1 -s -r -p "Нажмите любую клавишу для возврата в меню..."
 }
 
 # ==============================================================================
-# УПРАВЛЕНИЕ СЛУЖБОЙ
+# УПРАВЛЕНИЕ СЛУЖБОЙ И НАСТРОЙКАМИ
 # ==============================================================================
+
+service_menu() {
+    while true; do
+        draw_banner
+        echo -e "  1)  🟢 Запустить службу"
+        echo -e "  2)  🔴 Остановить службу"
+        echo -e "  3)  🔄 Перезапустить службу"
+        echo -e "  0)  🔙 Назад в меню\n"
+        read -r -p " Выберите действие [0-3]: " s_act
+
+        case "$s_act" in
+            1) manage_service start "запуск службы" ;;
+            2) manage_service stop "остановка службы" ;;
+            3) manage_service restart "перезапуск службы" ;;
+            0) return ;;
+            *) warn "Неверный ввод."; sleep 1 ;;
+        esac
+    done
+}
 
 manage_service() {
     local action=$1
     local action_ru=$2
-    draw_banner
     if [ ! -d "$APP_DIR" ]; then
         error "Бот не установлен!"
         sleep 1.5
@@ -299,22 +613,60 @@ manage_service() {
     sleep 1.5
 }
 
-edit_env() {
-    draw_banner
-    if [ -f "$APP_DIR/.env" ]; then
-        nano "$APP_DIR/.env"
-        echo ""
-        read -r -p " Конфигурация изменена. Перезапустить бота? (y/n): " ans
-        if [[ "$ans" =~ ^[Yy]$ ]]; then
-            systemctl restart $SERVICE_NAME
-            success "Бот перезапущен с новыми настройками."
+env_menu() {
+    while true; do
+        draw_banner
+        if [ ! -d "$APP_DIR" ]; then
+            error "Бот не установлен! Сначала выполните установку."
             sleep 1.5
+            return
         fi
-    else
-        error "Файл .env не найден. Установите бота сначала."
-        sleep 1.5
-    fi
+
+        echo -e "  1)  📝 Настройки (nano)"
+        echo -e "  2)  🔄 Сбросить настройки по умолчанию"
+        echo -e "  0)  🔙 Назад в меню\n"
+        read -r -p " Выберите действие [0-2]: " env_act
+
+        case "$env_act" in
+            1)
+                if [ -f "$APP_DIR/.env" ]; then
+                    nano "$APP_DIR/.env"
+                    echo ""
+                    read -r -p " Конфигурация изменена. Перезапустить бота? (y/n): " ans
+                    if [[ "$ans" =~ ^[Yy]$ ]]; then
+                        systemctl restart $SERVICE_NAME
+                        success "Бот перезапущен с новыми настройками."
+                        sleep 1.5
+                    fi
+                else
+                    error "Файл .env не найден."
+                    sleep 1.5
+                fi
+                ;;
+            2)
+                echo -e "\n${RED}${BOLD}⚠️  ВНИМАНИЕ: Текущие настройки будут полностью удалены!${RESET}"
+                read -r -p " Вы уверены, что хотите сбросить .env по умолчанию? (y/n): " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    if [ -f "$APP_DIR/.env.example" ]; then
+                        cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+                        success "Настройки успешно сброшены!"
+                    else
+                        error "Файл шаблона (.env.example) не найден!"
+                    fi
+                else
+                    warn "Сброс отменен."
+                fi
+                sleep 1.5
+                ;;
+            0) return ;;
+            *) warn "Неверный ввод."; sleep 1 ;;
+        esac
+    done
 }
+
+# ==============================================================================
+# ПОЛНОЕ УДАЛЕНИЕ
+# ==============================================================================
 
 # ==============================================================================
 # ПОЛНОЕ УДАЛЕНИЕ
@@ -326,22 +678,36 @@ uninstall_all() {
     echo -e "${DIM}Будут безвозвратно удалены следующие компоненты:${RESET}"
     echo -e "  ${RED}1.${RESET} Системная служба ($SERVICE_NAME)"
     echo -e "  ${RED}2.${RESET} Рабочая директория бота ($APP_DIR)"
-    echo -e "  ${RED}3.${RESET} Алиас и команда вызова ($SCRIPT_PATH)\n"
+    echo -e "  ${RED}3.${RESET} Системные алиасы и скрипты (remnabot во всех директориях)"
+    echo -e "  ${RED}4.${RESET} Задачи автобэкапа в cron"
+    echo -e "  ${DIM}(Ваши бэкапы в папке $BACKUP_DIR удалены не будут)${RESET}\n"
     
     read -r -p "Вы абсолютно уверены, что хотите удалить бота? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then warn "Процесс удаления отменен."; sleep 1.5; return; fi
 
     info "Запущен процесс полной очистки..."
     
+    # 1. Удаление задач из cron
+    crontab -l 2>/dev/null | grep -v 'remnabot-autobackup.sh' | crontab -
+    
+    # 2. Остановка и удаление службы
     systemctl stop $SERVICE_NAME >/dev/null 2>&1
     systemctl disable $SERVICE_NAME >/dev/null 2>&1
     rm -f /etc/systemd/system/$SERVICE_NAME
     systemctl daemon-reload
     
+    # 3. Удаление рабочих файлов бота
     rm -rf "$APP_DIR"
-    rm -f "$SCRIPT_PATH"
     
-    success "Система очищена. Бот удален."
+    # 4. Агрессивное удаление системных скриптов и алиасов из всех возможных путей
+    rm -f "/usr/local/bin/remnabot" "/usr/bin/remnabot" "/bin/remnabot"
+    rm -f "/usr/local/bin/remnabot-autobackup.sh" "/usr/bin/remnabot-autobackup.sh" "/bin/remnabot-autobackup.sh"
+    rm -f "$SCRIPT_PATH" "$AUTOBACKUP_SCRIPT"
+    
+    success "Система полностью очищена. Бот и системные скрипты удалены."
+    
+    # Выходим из скрипта с очисткой кэша путей bash
+    hash -r 2>/dev/null
     exit 0
 }
 
@@ -352,33 +718,28 @@ uninstall_all() {
 main_menu() {
     while true; do
         draw_banner
-        echo -e "${CYAN}╭────────────────────────────────────────────────────╮${RESET}"
-        echo -e "${CYAN}│${RESET}  1) 🚀 Установить бота                             ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  2) 🔄 Обновить бота (из GitHub)                   ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  3) 🟢 Запустить (Start)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  4) 🔴 Остановить (Stop)                           ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  5) 🔄 Перезапустить (Restart)                     ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  6) 📊 Статус (Dashboard)                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  7) 📋 Логи бота                                   ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  8) 🔧 Редактировать .env                          ${CYAN}│${RESET}"
-        echo -e "${CYAN}├────────────────────────────────────────────────────┤${RESET}"
-        echo -e "${CYAN}│${RESET}  9) ${RED}🧨 Удалить бота${RESET}                               ${CYAN}│${RESET}"
-        echo -e "${CYAN}│${RESET}  0) 🚪 Выход                                      ${CYAN}│${RESET}"
-        echo -e "${CYAN}╰────────────────────────────────────────────────────╯\n${RESET}"
-        read -r -p " Выберите действие [0-9]: " act
+        echo -e "  1)  🚀 Установить бота"
+        echo -e "  2)  🔄 Обновить бота (из GitHub)"
+        echo -e "  3)  ⚙️ Управление службой"
+        echo -e "  4)  📊 Информация"
+        echo -e "  5)  📋 Логи"
+        echo -e "  6)  🔧 Настройки (.env)"
+        echo -e "  7)  💾 Бэкапы и восстановление"
+        echo -e "  8)  🧨 ${RED}Удалить бота${RESET}"
+        echo -e "  0)  🚪 Выход\n"
+        read -r -p " Выберите действие [0-8]: " act
 
         case "$act" in
             1) install_bot ;;
             2) update_bot ;;
-            3) manage_service start "запуск службы" ;;
-            4) manage_service stop "остановка службы" ;;
-            5) manage_service restart "перезапуск службы" ;;
-            6) show_info ;;
-            7) show_logs ;;
-            8) edit_env ;;
-            9) uninstall_all ;;
+            3) service_menu ;;
+            4) show_info ;;
+            5) show_logs ;;
+            6) env_menu ;;
+            7) backup_menu ;;
+            8) uninstall_all ;;
             0) clear; exit 0 ;;
-            *) warn "Неверный ввод, выберите пункт от 0 до 9."; sleep 1 ;;
+            *) warn "Неверный ввод, выберите пункт от 0 до 8."; sleep 1 ;;
         esac
     done
 }
