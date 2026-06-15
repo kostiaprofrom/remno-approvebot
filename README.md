@@ -36,7 +36,7 @@
 Подключитесь к вашему серверу по SSH от имени `root` и выполните следующую команду:
 
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh](https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh))
+bash <(curl -fsSL https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh)
 ```
 
 > 💡 **Встроенный менеджер управления**
@@ -52,7 +52,7 @@ bash <(curl -fsSL [https://raw.githubusercontent.com/kostiaprofrom/remno-approve
 1. Клонируйте репозиторий:
 
 ```bash
-git clone [https://github.com/kostiaprofrom/remno-approvebot.git](https://github.com/kostiaprofrom/remno-approvebot.git)
+git clone https://github.com/kostiaprofrom/remno-approvebot.git
 cd remno-approvebot
 ```
 
@@ -78,13 +78,13 @@ ADMIN_ID=987654321
 ACCESS_CODE=СЕКРЕТНЫЙ_КОД_СТАРТА
 
 # Настройки интеграции Remnawave
-REMNAWAVE_BASE_URL=[https://panel.yourdomain.com](https://panel.yourdomain.com)
+REMNAWAVE_BASE_URL=https://panel.yourdomain.com
 REMNAWAVE_TOKEN=your_remnawave_api_token
 REMNAWAVE_DEFAULT_SQUAD_UUID=your-squad-uuid-here
 
 # Маркетинг и ссылки
-CHAT_LINK=[https://t.me/your_community_chat](https://t.me/your_community_chat)
-PAYMENT_LINK=[https://t.me/your_payment_gateway](https://t.me/your_payment_gateway)
+CHAT_LINK=https://t.me/your_community_chat
+PAYMENT_LINK=https://t.me/your_payment_gateway
 REFERRAL_BONUS_DAYS=7
 
 # Настройки планировщика и интерфейса
