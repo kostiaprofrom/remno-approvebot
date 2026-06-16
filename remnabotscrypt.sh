@@ -18,7 +18,6 @@ AUTOBACKUP_SCRIPT="/usr/local/bin/remnabot-autobackup.sh"
 SERVICE_NAME="remnabot.service"
 REPO_URL="https://github.com/kostiaprofrom/remno-approvebot.git"
 SCRIPT_PATH="/usr/local/bin/remnabot"
-SCRIPT_URL="https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh"
 
 # --- ЦВЕТА И ЭСТЕТИКА (ANSI Escape-коды) ---
 RESET=$'\033[0m'
@@ -188,10 +187,11 @@ EOF
         echo -e "   ${DIM}Служба создана, но не запустилась (нужно настроить .env)${RESET}"
     fi
 
-    msg="Создание глобальных алиасов и скриптов..."
+    msg="Создание глобальных алиасов (симлинк)..."
     echo -n -e "   ${DIM}► ${msg}${RESET}"
-    curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
-    chmod +x "$SCRIPT_PATH"
+    # Делаем скрипт в репозитории исполняемым и создаем симлинк на него
+    chmod +x "$APP_DIR/remnabotscrypt.sh"
+    ln -sf "$APP_DIR/remnabotscrypt.sh" "$SCRIPT_PATH"
     generate_autobackup_script
     echo -e "\r   ${GREEN}✔${RESET} ${DIM}${msg}${RESET}"
 
@@ -284,14 +284,19 @@ update_bot() {
         nano "$APP_DIR/.env"
     fi
     
-    curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null
-    chmod +x "$SCRIPT_PATH"
+    # Обновляем права и симлинк на случай, если git переписал их права доступа
+    chmod +x "$APP_DIR/remnabotscrypt.sh"
+    ln -sf "$APP_DIR/remnabotscrypt.sh" "$SCRIPT_PATH"
     generate_autobackup_script
 
     info "Запуск службы..."
     systemctl start $SERVICE_NAME
-    success "Бот и меню успешно обновлены до последней версии!"
+    success "Бот и панель управления успешно обновлены!"
+    
+    echo -e "${DIM}Перезапуск панели управления...${RESET}"
     sleep 2
+    # Команда exec заменяет текущий процесс на новый обновленный скрипт
+    exec "$SCRIPT_PATH"
 }
 
 # ==============================================================================
@@ -322,8 +327,6 @@ EOF
     chmod +x "$AUTOBACKUP_SCRIPT"
 }
 
-# Умная функция крона. Переводит часы в дни, если интервал больше 24 часов,
-# чтобы не нарушать синтаксис системного cron-планировщика в Linux.
 update_cron() {
     [ -f "$AUTOBACKUP_CONF" ] && source "$AUTOBACKUP_CONF"
     crontab -l 2>/dev/null | grep -v 'remnabot-autobackup.sh' > /tmp/current_cron
