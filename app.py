@@ -62,12 +62,14 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # 2. Импорты зависимостей проекта (aiogram, конфигурация, БД, API-клиенты)
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, TelegramObject, LinkPreviewOptions
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.exceptions import TelegramBadRequest
 
 # Конфигурационные параметры, загруженные из .env и config.py
 from config import (
@@ -151,6 +153,7 @@ from text_utils import (
     build_admin_panel_text,
     build_admin_users_list_text,
     build_admin_user_card_text,
+    build_wrong_input_warning_text,
 )
 
 # Клиент для взаимодействия с панелью Remnawave (VPN-сервис)
@@ -170,7 +173,7 @@ bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(
         parse_mode=ParseMode.HTML,
-        link_preview_is_disabled=True,
+        link_preview=LinkPreviewOptions(is_disabled=True)
     ),
 )
 dp = Dispatcher()
@@ -196,7 +199,7 @@ async def delete_user_message_safe(message: Message) -> None:
     except Exception:
         pass
 
-async def delete_message_safe(chat_id: int, message_id: int | None) -> None:
+async def delete_message_safe(chat_id: int, message_id: int or None) -> None:
     """Безопасно удаляет сообщение по его ID."""
     if not message_id:
         return
@@ -205,10 +208,40 @@ async def delete_message_safe(chat_id: int, message_id: int | None) -> None:
     except Exception:
         pass
 
+async def clear_previous_warning(state: FSMContext) -> None:
+    """Удаляет предыдущее предупреждение о кнопках, если оно существует в состоянии."""
+    if not state:
+        return
+    state_data = await state.get_data()
+    warning_msg_id = state_data.get("warning_menu_msg_id")
+    chat_id = state_data.get("warning_menu_chat_id")
+    
+    if warning_msg_id and chat_id:
+        await delete_message_safe(chat_id, warning_msg_id)
+        # Очищаем данные, чтобы не пытаться удалить повторно
+        await state.update_data(warning_menu_msg_id=None, warning_menu_chat_id=None)
+
+# Автоматический перехватчик для ВСЕХ кнопок (Callback-запросов)
+class ClearWarningMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler,
+        event: TelegramObject,
+        data: dict
+    ):
+        # Извлекаем FSM-контекст текущего пользователя из данных aiogram
+        state: FSMContext = data.get("state")
+        if state:
+            # Автоматически вызываем очистку ПЕРЕД тем, как сработает код кнопки
+            await clear_previous_warning(state)
+        
+        # Передаем управление дальше самому хэндлеру кнопки
+        return await handler(event, data)
+
 async def send_image_or_text(
     chat_id: int,
     text: str,
-    image_path: str | None = None,
+    image_path: str or None = None,
     reply_markup=None,
 ) -> Message:
     """
@@ -233,7 +266,7 @@ async def send_image_or_text(
     )
 
 # 6. Синхронизация данных пользователя с панелью Remnawave
-async def sync_user_subscription_with_panel(telegram_id: int) -> dict | None:
+async def sync_user_subscription_with_panel(telegram_id: int) -> dict or None:
     """
     Получает актуальные данные о подписке пользователя из панели Remnawave
     и обновляет локальную базу данных.
@@ -331,6 +364,7 @@ async def render_single_main_menu(chat_id: int) -> Message:
     return sent_message
 
 # 8. Вспомогательные функции для административной панели
+
 async def show_admin_panel(callback: CallbackQuery) -> None:
     """Показывает главное меню администратора."""
     text = build_admin_panel_text()
@@ -346,6 +380,10 @@ async def show_admin_panel(callback: CallbackQuery) -> None:
                 reply_markup=get_admin_panel_keyboard(),
                 disable_web_page_preview=True,
             )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise e
     except Exception:
         await bot.send_message(
             callback.from_user.id,
@@ -372,6 +410,10 @@ async def show_admin_access_filters(callback: CallbackQuery) -> None:
                 reply_markup=get_admin_access_filters_keyboard(),
                 disable_web_page_preview=True,
             )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise e
     except Exception:
         await bot.send_message(
             callback.from_user.id,
@@ -424,6 +466,10 @@ async def show_admin_users_page(
                 reply_markup=keyboard,
                 disable_web_page_preview=True,
             )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise e
     except Exception:
         await bot.send_message(
             callback.from_user.id,
@@ -464,6 +510,10 @@ async def show_admin_user_card(
                 reply_markup=keyboard,
                 disable_web_page_preview=True,
             )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise e
     except Exception:
         await bot.send_message(
             callback.from_user.id,
@@ -472,163 +522,9 @@ async def show_admin_user_card(
             disable_web_page_preview=True,
         )
 
-# 9. Обработчики команд и колбэков
-@dp.callback_query(F.data == "activate_trial")
-async def process_activate_trial(callback: CallbackQuery) -> None:
-    """Обработка активации пробного периода."""
-    chat_id = callback.from_user.id
-    
-    # 1. Повторно синхронизируем и запрашиваем данные пользователя для защиты от race condition
-    user = await sync_user_subscription_with_panel(chat_id)
-    if not user:
-        await callback.answer("Пользователь не найден.", show_alert=True)
-        return
 
-    days_left = calculate_days_left(user.get("subscription_expires_at"))
-    has_used_trial = bool(user.get("has_used_trial", 0))
+# Модифицированные хэндлеры из Раздела 9
 
-    # На всякий случай проверяем глобальный флаг
-    if not TRIAL_BUTTON_ENABLED:
-        await callback.answer("Пробный период недоступен.", show_alert=True)
-        await render_single_main_menu(chat_id)
-        return
-
-    # 2. Проверка условий активации
-    if has_used_trial or days_left > 0:
-        await callback.answer("Пробный период недоступен.", show_alert=True)
-        # Обновляем меню, чтобы убрать неактуальную кнопку
-        await render_single_main_menu(chat_id)
-        return
-
-    # 3. Логика успешного выполнения
-    now = datetime.now(timezone.utc)
-    trial_expiry = now + timedelta(days=TRIAL_DAYS)
-    trial_expiry_iso = trial_expiry.isoformat().replace("+00:00", "Z")
-
-    try:
-        # Интеграция с внешней панелью Remnawave
-        # Метод ensure_user_and_extend создаст пользователя в панели, если его нет, или продлит
-        await remnawave_client.ensure_user_and_extend(
-            telegram_id=chat_id,
-            telegram_username=callback.from_user.username,
-            days=TRIAL_DAYS,
-            current_user_uuid=user.get("remnawave_user_uuid")
-        )
-        
-        # Обновляем локальную базу данных
-        await activate_user_trial(DB_PATH, chat_id, trial_expiry_iso)
-        
-        # Форматируем дату для вывода пользователю (ДД.ММ.ГГГГ)
-        formatted_date = trial_expiry.strftime("%d.%m.%Y")
-        
-        await callback.answer("Пробный период успешно активирован! 🎉", show_alert=False)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"🎁 <b>Пробный период на {TRIAL_DAYS} дней активирован!</b>\nДоступ предоставлен до {formatted_date}."
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка при активации пробного периода для {chat_id}: {e}")
-        await callback.answer("Произошла ошибка при подключении к серверу. Попробуйте позже.", show_alert=True)
-        return
-
-    # 4. Перерисовываем главное меню (кнопка исчезнет, так как has_used_trial станет True)
-    await render_single_main_menu(chat_id)
-
-@dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext) -> None:
-    """
-    Обработчик команды /start.
-    - Проверяет реферальный параметр (ref_<id>).
-    - Создаёт/обновляет пользователя в БД.
-    - Если переход по реферальной ссылке – сразу выдаёт доступ.
-    - Иначе запрашивает код доступа.
-    """
-    user = message.from_user
-    referrer_id = None
-    by_referral_link = False
-
-    logger.info(f"Команда /start от пользователя {user.id} ({user.full_name})")
-
-    # Разбираем аргументы команды /start
-    args = message.text.split()
-    if len(args) > 1:
-        start_arg = args[1]
-        if start_arg.startswith("ref_"):
-            start_arg = start_arg.replace("ref_", "")
-            
-        if start_arg.isdigit():
-            referrer_id = int(start_arg)
-            if referrer_id != user.id:
-                logger.info(f"Пользователь {user.id} перешёл по реферальной ссылке от {referrer_id}")
-                await set_referrer(DB_PATH, user.id, referrer_id)
-                by_referral_link = True
-            else:
-                logger.warning(f"Пользователь {user.id} попытался перейти по своей собственной ссылке.")
-
-    # Создаем или обновляем пользователя в локальной БД
-    await create_or_update_user(
-        DB_PATH,
-        telegram_id=user.id,
-        username=user.username,
-        full_name=user.full_name,
-        referred_by=referrer_id
-    )
-
-    # Если пользователь пришел по реферальной ссылке, автоматически выдаем ему доступ
-    if by_referral_link:
-        logger.info(f"Автоматическая выдача доступа рефералу {user.id} пригласителя {referrer_id}")
-        await grant_access(DB_PATH, user.id, f"referred_by_{referrer_id}")
-        
-        if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
-            await send_image_or_text(
-                chat_id=message.chat.id,
-                text=build_access_success_text(),
-                image_path=WELCOME_IMAGE_PATH,
-            )
-        else:
-            await bot.send_message(message.chat.id, build_access_success_text())
-
-    db_user = await get_user(DB_PATH, user.id)
-    await delete_user_message_safe(message)
-
-    # Если доступ уже есть – показываем главное меню
-    if db_user and db_user.get("access_granted") == 1:
-        await state.clear()
-        await render_single_main_menu(user.id)
-        return
-
-    # Иначе переводим в состояние ожидания кода доступа
-    await state.set_state(AccessStates.waiting_for_access_code)
-    await bot.send_message(user.id, build_access_prompt_text())
-
-@dp.message(AccessStates.waiting_for_access_code)
-async def process_access_code(message: Message, state: FSMContext) -> None:
-    """Проверяет введённый код доступа и при успехе выдаёт доступ."""
-    entered_code = (message.text or "").strip()
-    await delete_user_message_safe(message)
-
-    if entered_code != ACCESS_CODE:
-        logger.warning(f"Пользователь {message.from_user.id} ввёл неверный код доступа.")
-        await bot.send_message(message.chat.id, build_access_error_text())
-        return
-
-    logger.info(f"Пользователь {message.from_user.id} успешно ввёл код доступа.")
-    await grant_access(DB_PATH, message.from_user.id, entered_code)
-    await state.clear()
-
-    if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
-        await send_image_or_text(
-            chat_id=message.chat.id,
-            text=build_access_success_text(),
-            image_path=WELCOME_IMAGE_PATH,
-        )
-    else:
-        await bot.send_message(message.chat.id, build_access_success_text())
-
-    await render_single_main_menu(message.from_user.id)
-
-# Основные колбэки интерфейса
 @dp.callback_query(F.data == "open_tariffs")
 async def open_tariffs(callback: CallbackQuery) -> None:
     """Открывает список тарифов."""
@@ -644,8 +540,64 @@ async def open_tariffs(callback: CallbackQuery) -> None:
                 reply_markup=get_tariffs_keyboard(),
                 disable_web_page_preview=True,
             )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await callback.answer()
+            return
+        raise e
     except Exception:
         await render_single_main_menu(callback.from_user.id)
+
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("tariff:"))
+async def choose_tariff(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор тарифа: запоминаем данные и переходим в состояние ожидания скриншота."""
+    tariff_code = callback.data.split(":")[1]
+    tariff = TARIFFS.get(tariff_code)
+
+    if not tariff:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    await state.update_data(
+        tariff_code=tariff.code,
+        tariff_days=tariff.days,
+        amount=tariff.price,
+        tariff_title=tariff.title,
+    )
+    await state.set_state(PaymentStates.waiting_for_screenshot)
+
+    text = build_tariff_payment_text(
+        tariff_title=tariff.title,
+        amount=tariff.price,
+        payment_link=PAYMENT_LINK,
+    )
+
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=text,
+                reply_markup=get_tariff_selected_keyboard(),
+            )
+        else:
+            await callback.message.edit_text(
+                text,
+                reply_markup=get_tariff_selected_keyboard(),
+                disable_web_page_preview=True,
+            )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await callback.answer()
+            return
+        raise e
+    except Exception:
+        await bot.send_message(
+            callback.from_user.id,
+            text,
+            reply_markup=get_tariff_selected_keyboard(),
+            disable_web_page_preview=True,
+        )
 
     await callback.answer()
 
@@ -761,7 +713,6 @@ async def admin_user_card(callback: CallbackQuery) -> None:
 async def admin_toggle_access_handler(callback: CallbackQuery, state: FSMContext) -> None:
     """
     Переключает доступ пользователя (вкл/выкл) по команде администратора.
-    Если доступ отключается – чистит меню у пользователя.
     """
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
@@ -845,6 +796,8 @@ async def process_screenshot(message: Message, state: FSMContext) -> None:
     """
     Получает скриншот оплаты, сохраняет заявку в БД и отправляет её администратору.
     """
+    await clear_previous_warning(state)
+
     data = await state.get_data()
 
     tariff_code = data.get("tariff_code")
@@ -875,8 +828,21 @@ async def process_screenshot(message: Message, state: FSMContext) -> None:
 
     logger.info(f"Создана заявка на оплату #{request_id} от пользователя {message.from_user.id} ({tariff_title})")
     await delete_user_message_safe(message)
-    await bot.send_message(message.chat.id, build_request_sent_text())
-    await state.clear()
+    
+    # Отправляем сообщение об успешной передаче заявки
+    sent_msg = await bot.send_message(message.chat.id, build_request_sent_text())
+    
+    # ИСПРАВЛЕНИЕ: Вместо полного state.clear() мы аккуратно убираем старые данные 
+    # тарифа, но СОХРАНЯЕМ ID отправленного сообщения "Заявка отправлена" во FSM
+    await state.set_state(None)  # Сбрасываем состояние ожидания скриншота
+    await state.update_data(
+        tariff_code=None,
+        tariff_days=None,
+        amount=None,
+        tariff_title=None,
+        request_sent_msg_id=sent_msg.message_id,   # <--- ТЕПЕРЬ ДАННЫЕ ОСТАНУТСЯ ТУТ И НЕ СТРУТСЯ!
+        request_sent_chat_id=message.chat.id
+    )
 
     user = await get_user(DB_PATH, message.from_user.id)
     display_name = safe_user_name(
@@ -907,27 +873,26 @@ async def process_screenshot(message: Message, state: FSMContext) -> None:
 async def process_non_photo_when_waiting_screenshot(message: Message, state: FSMContext) -> None:
     """Если пользователь отправляет не фото, а что-то другое – просим загрузить фото."""
     await delete_user_message_safe(message)
+    await clear_previous_warning(state)
 
     old_menu_message_id = await get_last_menu_message_id(DB_PATH, message.from_user.id)
     if old_menu_message_id:
         await delete_message_safe(message.chat.id, old_menu_message_id)
         await set_last_menu_message_id(DB_PATH, message.from_user.id, None)
-
-    await bot.send_message(
+    warning_message = await bot.send_message(
         message.chat.id,
         build_invalid_screenshot_text(),
         reply_markup=get_back_to_tariffs_keyboard(),
     )
+    await state.update_data(
+        warning_menu_msg_id=warning_message.message_id,
+        warning_menu_chat_id=message.chat.id
+    )
 
-# ---------- Обработка заявок администратором ----------
 @dp.callback_query(F.data.startswith("admin_approve:"))
 async def admin_approve_request(callback: CallbackQuery) -> None:
     """
-    Одобрение заявки на оплату:
-    - продлевает подписку в панели Remnawave,
-    - обновляет БД,
-    - начисляет реферальный бонус (если есть),
-    - уведомляет пользователя.
+    Одобрение заявки на оплату.
     """
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
@@ -982,11 +947,34 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
             subscription_expires_at=result.get("expires_at"),
         )
 
-        # Уведомляем покупателя об успешном продлении
-        await bot.send_message(
+        # --- ОБРАБОТКА ВЗАИМОДЕЙСТВИЯ С FSM ПОЛЬЗОВАТЕЛЯ ---
+        user_fsm_key = StorageKey(bot_id=callback.bot.id, chat_id=buyer_id, user_id=buyer_id)
+        dispatcher = callback.bot.dispatcher if hasattr(callback.bot, 'dispatcher') else dp
+        user_state_ctx = FSMContext(storage=dispatcher.storage, key=user_fsm_key)
+
+        # Сначала вытягиваем данные пользователя и удаляем сообщение "Заявка отправлена"
+        user_data = await user_state_ctx.get_data()
+        sent_msg_id = user_data.get("request_sent_msg_id")
+        sent_chat_id = user_data.get("request_sent_chat_id")
+        
+        if sent_msg_id and sent_chat_id:
+            await delete_message_safe(sent_chat_id, sent_msg_id)
+        
+        # Полностью очищаем FSM переменные старой отправленной заявки
+        await user_state_ctx.update_data(request_sent_msg_id=None, request_sent_chat_id=None)
+
+        # Теперь отправляем покупателю новое уведомление об успешном продлении
+        user_notification = await bot.send_message(
             buyer_id,
             build_user_request_accepted_text(request_data["tariff_days"]),
         )
+
+        # Записываем ID нового уведомления, чтобы стереть его по нажатию кнопки
+        await user_state_ctx.update_data(
+            warning_menu_msg_id=user_notification.message_id,
+            warning_menu_chat_id=buyer_id
+        )
+        # --------------------------------------------------
 
         # Реферальный бонус: если оплатил реферал – добавляем дни пригласившему
         if REFERRAL_BONUS_DAYS > 0:
@@ -1012,12 +1000,12 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
                             f"Спасибо, что рекомендуете наш сервис!"
                         )
                     except Exception as ref_err:
-                        logger.error(f"[REFERRAL ERROR] Ошибка синхронизации бонуса с панелью для {referrer_id}: {ref_err}")
+                        logger.error(f"[REFERRAL ERROR] Ошибка синхронизации бонуса с панели для {referrer_id}: {ref_err}")
 
         # Обновляем главное меню покупателя
         await render_single_main_menu(buyer_id)
 
-        # Изменяем клавиатуру у сообщения администратора (заменяем кнопки на "одобрено")
+        # Изменяем клавиатуру у сообщения администратора
         try:
             await callback.message.edit_reply_markup(
                 reply_markup=get_admin_processed_keyboard("approved"),
@@ -1034,9 +1022,10 @@ async def admin_approve_request(callback: CallbackQuery) -> None:
         )
         await callback.answer("Ошибка при обработке.", show_alert=True)
 
+
 @dp.callback_query(F.data.startswith("admin_reject:"))
 async def admin_reject_request(callback: CallbackQuery) -> None:
-    """Отклонение заявки: обновляем статус и уведомляем пользователя."""
+    """Отклонение заявки: обновляем статус, удаляем старое сообщение и уведомляем пользователя."""
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("У Вас нет доступа к этой функции.", show_alert=True)
         return
@@ -1052,7 +1041,9 @@ async def admin_reject_request(callback: CallbackQuery) -> None:
         await callback.answer("Эта заявка уже обработана.", show_alert=True)
         return
 
-    logger.info(f"Администратор отклонил заявку #{request_id} от пользователя {request_data['telegram_id']}")
+    buyer_id = request_data["telegram_id"]
+    logger.info(f"Администратор отклонил заявку #{request_id} от пользователя {buyer_id}")
+    
     await update_request_status(
         DB_PATH,
         request_id=request_id,
@@ -1061,11 +1052,35 @@ async def admin_reject_request(callback: CallbackQuery) -> None:
         processed_by=callback.from_user.id,
     )
 
-    await bot.send_message(
-        request_data["telegram_id"],
+    # --- ОБРАБОТКА ВЗАИМОДЕЙСТВИЯ С FSM ПОЛЬЗОВАТЕЛЯ ---
+    user_fsm_key = StorageKey(bot_id=callback.bot.id, chat_id=buyer_id, user_id=buyer_id)
+    dispatcher = callback.bot.dispatcher if hasattr(callback.bot, 'dispatcher') else dp
+    user_state_ctx = FSMContext(storage=dispatcher.storage, key=user_fsm_key)
+
+    # Сначала удаляем сообщение "Заявка отправлена"
+    user_data = await user_state_ctx.get_data()
+    sent_msg_id = user_data.get("request_sent_msg_id")
+    sent_chat_id = user_data.get("request_sent_chat_id")
+    
+    if sent_msg_id and sent_chat_id:
+        await delete_message_safe(sent_chat_id, sent_msg_id)
+        
+    await user_state_ctx.update_data(request_sent_msg_id=None, request_sent_chat_id=None)
+
+    # Отправляем уведомление об отклонении
+    user_notification = await bot.send_message(
+        buyer_id,
         build_user_request_rejected_text(),
     )
-    await render_single_main_menu(request_data["telegram_id"])
+
+    # Записываем ID уведомления, чтобы стереть его позже при нажатии кнопок
+    await user_state_ctx.update_data(
+        warning_menu_msg_id=user_notification.message_id,
+        warning_menu_chat_id=buyer_id
+    )
+    # --------------------------------------------------
+
+    await render_single_main_menu(buyer_id)
 
     try:
         await callback.message.edit_reply_markup(
@@ -1079,9 +1094,7 @@ async def admin_reject_request(callback: CallbackQuery) -> None:
 # 10. Фоновый планировщик напоминаний об окончании подписки
 async def reminder_scheduler() -> None:
     """
-    Периодически проверяет пользователей с активной подпиской:
-    - за 3 дня до окончания отправляет предупреждение,
-    - за 1 день – финальное напоминание.
+    Периодически проверяет пользователей с активной подпиской.
     """
     logger.info("[REMINDER] Фоновый планировщик напоминаний успешно запущен.")
     while True:
@@ -1131,6 +1144,24 @@ async def reminder_scheduler() -> None:
             
         await asyncio.sleep(REMIDER_CHECK_INTERVAL_SECONDS)
 
+# Хэндлер-заглушка для обработки любого неверного ввода
+@dp.message(StateFilter(None), ~F.text.startswith('/'))
+async def handle_wrong_inputs(message: Message, state: FSMContext) -> None:
+    """
+    Перехватывает любые сообщения, отправленные пользователем ВНЕ состояний FSM, 
+    удаляет их и просит использовать интерактивные кнопки.
+    """
+    await delete_user_message_safe(message)
+    await clear_previous_warning(state)
+
+    warning_text = build_wrong_input_warning_text()
+    warning_message = await message.answer(warning_text)
+
+    await state.update_data(
+        warning_menu_msg_id=warning_message.message_id,
+        warning_menu_chat_id=message.chat.id
+    )
+
 # 11. Основная асинхронная функция запуска бота
 async def main() -> None:
     """Инициализация БД, проверка конфигурации, запуск polling и планировщика."""
@@ -1153,8 +1184,9 @@ async def main() -> None:
     logger.info("Сброс старых вебхуков Telegram (drop_pending_updates=True)...")
     await bot.delete_webhook(drop_pending_updates=True)
 
-    # Создание фоновой асинхронной задачи планировщика
     asyncio.create_task(reminder_scheduler())
+
+    dp.callback_query.middleware(ClearWarningMiddleware())
 
     logger.info("🚀 Бот успешно прошёл инициализацию и начинает Polling!")
     logger.info(f"   Admin ID: {ADMIN_ID}")

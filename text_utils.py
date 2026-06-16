@@ -137,11 +137,7 @@ def build_tariffs_text() -> str:
     return get_env_text("TEXT_TARIFFS", default)
 
 
-from html import escape
-import os
-
 def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str) -> str:
-
     default_template = (
         "💳 <b>Оплата подписки</b>\n\n"
         "📦 <b>Тариф:</b> {tariff_title}\n"
@@ -149,14 +145,11 @@ def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str)
         "После оплаты отправьте скриншот."
     )
     
-    raw_template = os.getenv("TEXT_TARIFF_PAYMENT", default_template)
-    template = raw_template.replace("\\n", "\n")
-    
+    template = get_env_text("TEXT_TARIFF_PAYMENT", default_template)
     safe_title = escape(tariff_title)
     
     if payment_link and payment_link.strip().lower() != "none":
         safe_link = escape(payment_link.strip(), quote=True)
-        
         try:
             return template.format(
                 tariff_title=safe_title,
@@ -165,17 +158,8 @@ def build_tariff_payment_text(tariff_title: str, amount: int, payment_link: str)
             )
         except KeyError:
             return template.format(tariff_title=safe_title, amount=amount)
-            
     else:
-        return template.format(
-            tariff_title=safe_title,
-            amount=amount
-        )
-        
-    return header + body
-    
-    template = get_env_text("TEXT_TARIFF_PAYMENT", default)
-    return template.format(tariff_title=escape(tariff_title), amount=amount, payment_link=payment_link)
+        return template.format(tariff_title=safe_title, amount=amount)
 
 
 def build_invalid_screenshot_text() -> str:
@@ -319,3 +303,12 @@ def build_admin_user_card_text(user: dict) -> str:
         subscription_url=escape(str(subscription_url)),
         expires_at=escape(str(expires_at))
     )
+
+
+def build_wrong_input_warning_text() -> str:
+    """Возвращает кастомизируемый текст предупреждения при неверном вводе мимо кнопки"""
+    default = (
+        "⚠️ <b>Действие не распознано.</b>\n\n"
+        "Пожалуйста, воспользуйтесь <b>интерактивными кнопками</b> для управления ботом."
+    )
+    return get_env_text("WRONG_INPUT_WARNING_TEXT", default)
