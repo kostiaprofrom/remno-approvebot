@@ -42,7 +42,7 @@ draw_banner() {
     clear
     echo -e "${MAGENTA}${BOLD}╭───────────────────────────────────────────────────╮"
     echo -e "│             R E M N O   A P P R O V E             │"
-    echo -e "│                   Bot Manager  test                   │"
+    echo -e "│                   Bot Manager                     │"
     echo -e "╰───────────────────────────────────────────────────╯${RESET}"
 }
 
