@@ -18,6 +18,7 @@ AUTOBACKUP_SCRIPT="/usr/local/bin/remnabot-autobackup.sh"
 SERVICE_NAME="remnabot.service"
 REPO_URL="https://github.com/kostiaprofrom/remno-approvebot.git"
 SCRIPT_PATH="/usr/local/bin/remnabot"
+SCRIPT_URL="https://raw.githubusercontent.com/kostiaprofrom/remno-approvebot/main/remnabotscrypt.sh"
 
 # --- ЦВЕТА И ЭСТЕТИКА (ANSI Escape-коды) ---
 RESET=$'\033[0m'
@@ -40,10 +41,10 @@ error() { echo -e "${RED}✖ ${RESET}${BOLD}$1${RESET}"; }
 # --- ОТРИСОВКА ЗАГОЛОВКА ---
 draw_banner() {
     clear
-    echo -e "${MAGENTA}${BOLD}╭───────────────────────────────────────────────────╮"
-    echo -e "│             R E M N O   A P P R O V E             │"
-    echo -e "│                   Bot Manager                     │"
-    echo -e "╰───────────────────────────────────────────────────╯${RESET}"
+    echo -e "${MAGENTA}${BOLD}╭────────────────────────────────────────────────────╮"
+    echo -e "│             R E M N O   A P P R O V E              │"
+    echo -e "│                 Bot Manager                        │"
+    echo -e "╰────────────────────────────────────────────────────╯${RESET}"
 }
 
 # ==============================================================================
@@ -189,7 +190,6 @@ EOF
 
     msg="Создание глобальных алиасов (симлинк)..."
     echo -n -e "   ${DIM}► ${msg}${RESET}"
-    # Делаем скрипт в репозитории исполняемым и создаем симлинк на него
     chmod +x "$APP_DIR/remnabotscrypt.sh"
     ln -sf "$APP_DIR/remnabotscrypt.sh" "$SCRIPT_PATH"
     generate_autobackup_script
@@ -216,9 +216,9 @@ update_bot() {
     fi
 
     echo -e " Выберите вариант обновления:"
-    echo -e "  1)  📦 Сохранить текущий файл настроек (Рекомендуется)"
-    echo -e "  2)  🆕 Обновить файл настроек (Сброс параметров)"
-    echo -e "  0)  🔙 Отмена\n"
+    echo -e "  1)  📦  Сохранить текущий файл настроек (Рекомендуется)"
+    echo -e "  2)  🆕  Обновить файл настроек (Сброс параметров)"
+    echo -e "  0)  🔙  Отмена\n"
     read -r -p " Выберите действие [0-2]: " up_act
 
     if [[ "$up_act" == "0" ]]; then return; fi
@@ -284,18 +284,16 @@ update_bot() {
         nano "$APP_DIR/.env"
     fi
     
-    # Обновляем права и симлинк на случай, если git переписал их права доступа
     chmod +x "$APP_DIR/remnabotscrypt.sh"
     ln -sf "$APP_DIR/remnabotscrypt.sh" "$SCRIPT_PATH"
     generate_autobackup_script
 
     info "Запуск службы..."
     systemctl start $SERVICE_NAME
-    success "Бот и панель управления успешно обновлены!"
+    success "Бот и меню успешно обновлены до последней версии!"
     
     echo -e "${DIM}Перезапуск панели управления...${RESET}"
     sleep 2
-    # Команда exec заменяет текущий процесс на новый обновленный скрипт
     exec "$SCRIPT_PATH"
 }
 
@@ -350,10 +348,10 @@ backup_menu() {
     while true; do
         draw_banner
         echo -e " ${DIM}📁 Путь к бэкапам: $BACKUP_DIR${RESET}\n"
-        echo -e "  1)  💾 Принудительный ручной бэкап"
-        echo -e "  2)  ⚙️ Настройка автобэкапа"
-        echo -e "  3)  ♻️ Восстановление из бэкапа"
-        echo -e "  0)  🔙 Назад в меню\n"
+        echo -e "  1)  💾  Принудительный ручной бэкап"
+        echo -e "  2)  ⚡  Настройка автобэкапа"
+        echo -e "  3)  📥  Восстановление из бэкапа"
+        echo -e "  0)  🔙  Назад в меню\n"
         read -r -p " Выберите действие [0-3]: " b_act
 
         case "$b_act" in
@@ -403,10 +401,10 @@ backup_menu() {
                 echo -e " Доступные бэкапы:"
                 local i=1
                 for b in "${backups[@]}"; do
-                    echo -e "  $i) 📁 $b"
+                    echo -e "  $i) 📁  $b"
                     ((i++))
                 done
-                echo -e "  0) 🔙 Отмена\n"
+                echo -e "  0) 🔙  Отмена\n"
                 
                 read -r -p " Выберите бэкап [0-${#backups[@]}]: " b_idx
                 
@@ -427,10 +425,10 @@ backup_menu() {
                 fi
                 
                 echo -e "\n Что именно вы хотите восстановить?"
-                echo -e "  1)  📦 Всё (Базу данных и настройки)"
-                echo -e "  2)  🔧 Только настройки (.env)"
-                echo -e "  3)  🗄️ Только базу данных (bot.db)"
-                echo -e "  0)  🔙 Отмена"
+                echo -e "  1)  📦  Всё (Базу данных и настройки)"
+                echo -e "  2)  🔧  Только настройки (.env)"
+                echo -e "  3)  🗄️  Только базу данных (bot.db)"
+                echo -e "  0)  🔙  Отмена"
                 read -r -p " Выберите действие [0-3]: " r_act
 
                 if [[ "$r_act" == "0" ]]; then continue; fi
@@ -489,10 +487,10 @@ autobackup_menu() {
         
         draw_banner
         echo -e " ${DIM}📁 Путь к бэкапам: $BACKUP_DIR${RESET}\n"
-        echo -e "  1)  🔄 Статус автобэкапа: $status_text"
-        echo -e "  2)  🔢 Лимит хранимых версий (Сейчас: $AUTO_RETAIN)"
-        echo -e "  3)  ⏱️ Интервал в часах (Сейчас: $AUTO_INTERVAL)"
-        echo -e "  0)  🔙 Назад\n"
+        echo -e "  1)  🔄  Статус автобэкапа: $status_text"
+        echo -e "  2)  🔢  Лимит хранимых версий (Сейчас: $AUTO_RETAIN)"
+        echo -e "  3)  ⏳  Интервал в часах (Сейчас: $AUTO_INTERVAL)"
+        echo -e "  0)  🔙  Назад\n"
         read -r -p " Выберите действие [0-3]: " ab_act
 
         case "$ab_act" in
@@ -533,9 +531,9 @@ autobackup_menu() {
 show_logs() {
     while true; do
         draw_banner
-        echo -e "  1)  🟢 Live логи (в реальном времени)"
-        echo -e "  2)  📄 Подробные логи (последние 500 строк)"
-        echo -e "  0)  🔙 Назад в меню\n"
+        echo -e "  1)  🟢  Live логи (в реальном времени)"
+        echo -e "  2)  📄  Подробные логи (последние 500 строк)"
+        echo -e "  0)  🔙  Назад в меню\n"
         read -r -p " Выберите действие [0-2]: " log_act
 
         case "$log_act" in
@@ -599,10 +597,10 @@ show_info() {
 service_menu() {
     while true; do
         draw_banner
-        echo -e "  1)  🟢 Запустить службу"
-        echo -e "  2)  🔴 Остановить службу"
-        echo -e "  3)  🔄 Перезапустить службу"
-        echo -e "  0)  🔙 Назад в меню\n"
+        echo -e "  1)  🟢  Запустить службу"
+        echo -e "  2)  🔴  Остановить службу"
+        echo -e "  3)  🔄  Перезапустить службу"
+        echo -e "  0)  🔙  Назад в меню\n"
         read -r -p " Выберите действие [0-3]: " s_act
 
         case "$s_act" in
@@ -638,9 +636,9 @@ env_menu() {
             return
         fi
 
-        echo -e "  1)  📝 Настройки (nano)"
-        echo -e "  2)  🔄 Сбросить настройки по умолчанию"
-        echo -e "  0)  🔙 Назад в меню\n"
+        echo -e "  1)  📝  Настройки (nano)"
+        echo -e "  2)  🔄  Сбросить настройки по умолчанию"
+        echo -e "  0)  🔙  Назад в меню\n"
         read -r -p " Выберите действие [0-2]: " env_act
 
         case "$env_act" in
@@ -730,15 +728,15 @@ uninstall_all() {
 main_menu() {
     while true; do
         draw_banner
-        echo -e "  1)  🚀 Установить бота"
-        echo -e "  2)  🔄 Обновить бота (из GitHub)"
-        echo -e "  3)  ⚙️ Управление службой"
-        echo -e "  4)  📊 Информация"
-        echo -e "  5)  📋 Логи"
-        echo -e "  6)  🔧 Настройки (.env)"
-        echo -e "  7)  💾 Бэкапы и восстановление"
-        echo -e "  8)  🧨 ${RED}Удалить бота${RESET}"
-        echo -e "  0)  🚪 Выход\n"
+        echo -e "  1)  🚀  Установить бота"
+        echo -e "  2)  🔄  Обновить бота (из GitHub)"
+        echo -e "  3)  ⚡  Управление службой"
+        echo -e "  4)  📊  Информация"
+        echo -e "  5)  📋  Логи"
+        echo -e "  6)  🔧  Настройки (.env)"
+        echo -e "  7)  💾  Бэкапы и восстановление"
+        echo -e "  8)  🧨  ${RED}Удалить бота${RESET}"
+        echo -e "  0)  🚪  Выход\n"
         read -r -p " Выберите действие [0-8]: " act
 
         case "$act" in
