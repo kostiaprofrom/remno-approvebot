@@ -40,10 +40,10 @@ error() { echo -e "${RED}✖ ${RESET}${BOLD}$1${RESET}"; }
 # --- ОТРИСОВКА ЗАГОЛОВКА ---
 draw_banner() {
     clear
-    echo -e "${MAGENTA}${BOLD}╭────────────────────────────────────────────────────╮"
-    echo -e "│             R E M N O   A P P R O V E              │"
-    echo -e "│                 Bot Manager                        │"
-    echo -e "╰────────────────────────────────────────────────────╯${RESET}"
+    echo -e "${MAGENTA}${BOLD}╭───────────────────────────────────────────────────╮"
+    echo -e "│             R E M N O   A P P R O V E             │"
+    echo -e "│                   Bot Manager                     │"
+    echo -e "╰───────────────────────────────────────────────────╯${RESET}"
 }
 
 # ==============================================================================
@@ -491,7 +491,7 @@ autobackup_menu() {
         echo -e " ${DIM}📁 Путь к бэкапам: $BACKUP_DIR${RESET}\n"
         echo -e "  1)  🔄 Статус автобэкапа: $status_text"
         echo -e "  2)  🔢 Лимит хранимых версий (Сейчас: $AUTO_RETAIN)"
-        echo -e "  3)  ⏱️  Интервал в часах (Сейчас: $AUTO_INTERVAL)"
+        echo -e "  3)  ⏱️ Интервал в часах (Сейчас: $AUTO_INTERVAL)"
         echo -e "  0)  🔙 Назад\n"
         read -r -p " Выберите действие [0-3]: " ab_act
 
