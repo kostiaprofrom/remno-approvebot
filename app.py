@@ -522,6 +522,161 @@ async def show_admin_user_card(
             disable_web_page_preview=True,
         )
 
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    """
+    Обработчик команды /start.
+    - Проверяет реферальный параметр (ref_<id>).
+    - Создаёт/обновляет пользователя в БД.
+    - Если переход по реферальной ссылке – сразу выдаёт доступ.
+    - Иначе запрашивает код доступа.
+    """
+    user = message.from_user
+    referrer_id = None
+    by_referral_link = False
+
+    logger.info(f"Команда /start от пользователя {user.id} ({user.full_name})")
+
+    # Разбираем аргументы команды /start
+    args = message.text.split()
+    if len(args) > 1:
+        start_arg = args[1]
+        if start_arg.startswith("ref_"):
+            start_arg = start_arg.replace("ref_", "")
+
+        if start_arg.isdigit():
+            referrer_id = int(start_arg)
+            if referrer_id != user.id:
+                logger.info(f"Пользователь {user.id} перешёл по реферальной ссылке от {referrer_id}")
+                await set_referrer(DB_PATH, user.id, referrer_id)
+                by_referral_link = True
+            else:
+                logger.warning(f"Пользователь {user.id} попытался перейти по своей собственной ссылке.")
+
+    # Создаем или обновляем пользователя в локальной БД
+    await create_or_update_user(
+        DB_PATH,
+        telegram_id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        referred_by=referrer_id
+    )
+
+    # Если пользователь пришел по реферальной ссылке, автоматически выдаем ему доступ
+    if by_referral_link:
+        logger.info(f"Автоматическая выдача доступа рефералу {user.id} пригласителя {referrer_id}")
+        await grant_access(DB_PATH, user.id, f"referred_by_{referrer_id}")
+
+        if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
+            await send_image_or_text(
+                chat_id=message.chat.id,
+                text=build_access_success_text(),
+                image_path=WELCOME_IMAGE_PATH,
+            )
+        else:
+            await bot.send_message(message.chat.id, build_access_success_text())
+
+    db_user = await get_user(DB_PATH, user.id)
+    await delete_user_message_safe(message)
+
+    # Если доступ уже есть – показываем главное меню
+    if db_user and db_user.get("access_granted") == 1:
+        await state.clear()
+        await render_single_main_menu(user.id)
+        return
+
+    # Иначе переводим в состояние ожидания кода доступа
+    await state.set_state(AccessStates.waiting_for_access_code)
+    await bot.send_message(user.id, build_access_prompt_text())
+
+
+@dp.message(AccessStates.waiting_for_access_code)
+async def process_access_code(message: Message, state: FSMContext) -> None:
+    """Проверяет введённый код доступа и при успехе выдаёт доступ."""
+    entered_code = (message.text or "").strip()
+    await delete_user_message_safe(message)
+
+    if entered_code != ACCESS_CODE:
+        logger.warning(f"Пользователь {message.from_user.id} ввёл неверный код доступа.")
+        await bot.send_message(message.chat.id, build_access_error_text())
+        return
+
+    logger.info(f"Пользователь {message.from_user.id} успешно ввёл код доступа.")
+    await grant_access(DB_PATH, message.from_user.id, entered_code)
+    await state.clear()
+
+    if WELCOME_IMAGE_PATH and os.path.exists(WELCOME_IMAGE_PATH):
+        await send_image_or_text(
+            chat_id=message.chat.id,
+            text=build_access_success_text(),
+            image_path=WELCOME_IMAGE_PATH,
+        )
+    else:
+        await bot.send_message(message.chat.id, build_access_success_text())
+
+    await render_single_main_menu(message.from_user.id)
+
+
+@dp.callback_query(F.data == "activate_trial")
+async def process_activate_trial(callback: CallbackQuery) -> None:
+    """Обработка активации пробного периода."""
+    chat_id = callback.from_user.id
+
+    # 1. Повторно синхронизируем и запрашиваем данные пользователя для защиты от race condition
+    user = await sync_user_subscription_with_panel(chat_id)
+    if not user:
+        await callback.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    days_left = calculate_days_left(user.get("subscription_expires_at"))
+    has_used_trial = bool(user.get("has_used_trial", 0))
+
+    # На всякий случай проверяем глобальный флаг
+    if not TRIAL_BUTTON_ENABLED:
+        await callback.answer("Пробный период недоступен.", show_alert=True)
+        await render_single_main_menu(chat_id)
+        return
+
+    # 2. Проверка условий активации
+    if has_used_trial or days_left > 0:
+        await callback.answer("Пробный период недоступен.", show_alert=True)
+        # Обновляем меню, чтобы убрать неактуальную кнопку
+        await render_single_main_menu(chat_id)
+        return
+
+    # 3. Логика успешного выполнения
+    now = datetime.now(timezone.utc)
+    trial_expiry = now + timedelta(days=TRIAL_DAYS)
+    trial_expiry_iso = trial_expiry.isoformat().replace("+00:00", "Z")
+
+    try:
+        # Интеграция с внешней панелью Remnawave
+        await remnawave_client.ensure_user_and_extend(
+            telegram_id=chat_id,
+            telegram_username=callback.from_user.username,
+            days=TRIAL_DAYS,
+            current_user_uuid=user.get("remnawave_user_uuid")
+        )
+
+        # Обновляем локальную базу данных
+        await activate_user_trial(DB_PATH, chat_id, trial_expiry_iso)
+
+        # Форматируем дату для вывода пользователю (ДД.ММ.ГГГГ)
+        formatted_date = trial_expiry.strftime("%d.%m.%Y")
+
+        await callback.answer("Пробный период успешно активирован! 🎉", show_alert=False)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"🎁 <b>Пробный период на {TRIAL_DAYS} дней активирован!</b>\nДоступ предоставлен до {formatted_date}."
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка при активации пробного периода для {chat_id}: {e}")
+        await callback.answer("Произошла ошибка при подключении к серверу. Попробуйте позже.", show_alert=True)
+        return
+
+    # 4. Перерисовываем главное меню (кнопка исчезнет, так как has_used_trial станет True)
+    await render_single_main_menu(chat_id)
 
 # Модифицированные хэндлеры из Раздела 9
 
